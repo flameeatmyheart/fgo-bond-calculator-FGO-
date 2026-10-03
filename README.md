@@ -2,7 +2,10 @@
 
 A fully offline, single-file web app that computes the optimal 5-servant team
 for maximizing bond-point gain per round in *Fate/Grand Order* (国服 / CN server).
-
+毕竟是个vibe coding的产物，但后续应该会更新和维护的（根本没人会看到这东西吧？）
+简述:该程序的作用就是在已知你的BOX的前提下（这需要抓包的配合）自动计算出羁绊最大化的队伍（怎么过图先别管，先贪再说）
+目前的使用环境是今年年底的空想树战，所以所有冠位都算了额外礼装框，后面跟进会去掉
+预计后面可能会出现的功能：限定职介的组队（方便冠位战） 优化冠位从者的计算 给出特定羁绊值的刷法（114514和1314520)
 > 中文完整技术文档与验证记录见 [DELIVERY.md](./DELIVERY.md)。
 
 ## What it does
