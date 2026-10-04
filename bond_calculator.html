@@ -82,6 +82,8 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
 .flexbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .flexbar input[type=text]{max-width:230px}
 .pill{background:#f1f5f9;border-radius:999px;padding:3px 11px;font-size:12px;color:#334155}
+.chips{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:2px}
+.chip{display:inline-flex;align-items:center;gap:3px;font-size:13px;font-weight:400;color:#334155;cursor:pointer}
 </style>
 </head>
 <body>
@@ -95,6 +97,7 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
   <button data-tab="box">我的 BOX</button>
   <button data-tab="ce">礼装</button>
   <button data-tab="param">机制参数</button>
+  <button data-tab="farm">羁绊刷法</button>
   <button data-tab="help">说明与依据</button>
 </nav>
 <main>
@@ -112,8 +115,10 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
             <option value="none">谁都不戴冠（对照组）</option>
           </select></div>
       </div>
+      <div style="margin-top:10px"><label class="f" style="display:block;margin-bottom:4px">限定职介（不勾=不限，冠位战常用）</label><div id="p-classWrap" class="chips"></div></div>
       <div style="margin-top:12px">
         <label class="chk"><input type="checkbox" id="p-mashIn" checked> 玛修必须上场</label>
+        <label class="chk"><input type="checkbox" id="p-mashBond" checked> 玛修提供全队羁绊加成（20% / 满绊 45%）</label>
         <label class="chk"><input type="checkbox" id="p-all15"> 现已戴冠的那几位都刷到了 15 绊（算「要不要换冠位」时勾）</label>
         <label class="chk"><input type="checkbox" id="p-noBat"> 满绊者一律不上场（冠位彻底换人）</label>
         <label class="chk"><input type="checkbox" id="p-forceBat"> 强制上满绊电池</label>
@@ -236,9 +241,10 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <div><label class="f">助战礼装张数</label>
           <select id="p-fce"><option value="0">0 张</option><option value="1">1 张</option>
           <option value="2" selected>2 张</option></select></div>
-        <div><label class="f">冠位免费礼装框数</label>
-          <select id="p-freeCrown"><option value="1" selected>1 个（占费框另算）</option>
-          <option value="2">2 个</option></select></div>
+        <div><label class="f">冠位额外礼装框</label>
+          <select id="p-freeCrown">
+            <option value="one" selected>仅 1 个冠位（实际）</option>
+            <option value="all">每个冠位都给（现状）</option></select></div>
       </div>
       <div style="margin-top:14px">
         <button class="primary" id="btn-param">保存参数</button>
@@ -252,6 +258,27 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
     <div class="card">
       <h2>每条规则的数据依据</h2>
       <div id="help-body"></div>
+    </div>
+  </section>
+
+  <section id="tab-farm">
+    <div class="card">
+      <h2>特定羁绊值刷法 <span class="hint">给定目标羁绊值，挑最划算的副本 + 算要刷几次</span></h2>
+      <div class="grid">
+        <div><label class="f">当前羁绊值</label><input type="number" id="farm-cur" value="0"></div>
+        <div><label class="f">目标羁绊值（如 114514 / 1314520）</label><input type="number" id="farm-tgt" value="1314520"></div>
+      </div>
+      <h3 style="margin:16px 0 6px">常驻副本表 <span class="hint">基础羁绊由你维护——本地没有全副本数据，请按需添加</span></h3>
+      <table id="farm-quests" class="tbl">
+        <tr><th>副本名</th><th>基础羁绊</th><th>AP</th><th>大成功率%</th><th></th></tr>
+        <tr><td><input value="追忆战 α"></td><td><input value="5436"></td><td><input value="40"></td><td><input value="0"></td><td><button class="mini gray farm-del">×</button></td></tr>
+      </table>
+      <div style="margin-top:8px">
+        <button class="mini" id="farm-add">＋ 加一行</button>
+        <button class="primary" id="farm-go" style="margin-left:8px">算刷法</button>
+        <span class="note" id="farm-msg"></span>
+      </div>
+      <div id="farm-out" style="margin-top:12px"></div>
     </div>
   </section>
 </main>
@@ -455,7 +482,9 @@ function defP() {
   const P = {
     base: D.base, costMax: D.costMax,
     b15: 25, mash: 20, mash15: 45,
-    freeCrown: 1,
+    freeCrown: 'one',
+    mashBond: true,
+    classes: [],
     frontN: 3, frontSelf: 20,
     fce: 2,
     mashIn: true, mcrown: false, noMash: false,
@@ -713,7 +742,7 @@ function evalTeam(team, P, quick) {
     for (let c = 0; c < NCE; c++) if (en[c]) _cover[c]++;
   }
 
-  const nf = crowns.length * (P.freeCrown | 0);
+  const nf = P.freeCrown === 'all' ? crowns.length : Math.min(crowns.length, 1);
   const np = team.length;
   const budget = P.costMax - svtCost;
   const fOwn = 1 + P.frontSelf / 100;
@@ -765,7 +794,7 @@ function evalTeam(team, P, quick) {
     if (bdEff(s, P) >= 15) n15++;
   }
   const mashFull = mashS ? !!(P.m15 || (P.all15 && mashS.gd)) : false;
-  const M = 1 + (P.b15 / 100) * n15 + (mashS ? (mashFull ? P.mash15 : P.mash) / 100 : 0);
+  const M = 1 + (P.b15 / 100) * n15 + (mashS && P.mashBond ? (mashFull ? P.mash15 : P.mash) / 100 : 0);
   const total = P.base * M * sigma;
   if (quick) return total;
 
@@ -831,7 +860,12 @@ function _snapshot(al, frPick, nrecv, fOwn, fnMax) {
 /* ============================ 候选池 ============================ */
 function buildPool(P) {
   const pool = [], seen = new Set();
-  const add = function (s) { if (s && !seen.has(s.id)) { seen.add(s.id); pool.push(s); } };
+  const cf = (P.classes && P.classes.length) ? P.classes : null;
+  const add = function (s) {
+    if (!s) return;
+    if (cf && cf.indexOf(s.cid) < 0) return;
+    if (!seen.has(s.id)) { seen.add(s.id); pool.push(s); }
+  };
 
   for (let i = 0; i < BOX.length; i++) {
     const s = BOX[i];
@@ -955,6 +989,88 @@ function evalManual(ids, P) {
   return { r: r };
 }
 
+/* ===================== 限定职介 chips ===================== */
+function renderClassChips() {
+  const wrap = $('p-classWrap'); if (!wrap) return;
+  let h = '';
+  Object.keys(CLS).forEach(function (k) {
+    const on = (P.classes && P.classes.indexOf(+k) >= 0);
+    h += '<label class="chip"><input type="checkbox" data-cls="' + k + '"' + (on ? ' checked' : '') +
+      '> ' + CLS[k] + '</label>';
+  });
+  wrap.innerHTML = h;
+}
+function readClassChips() {
+  const wrap = $('p-classWrap'); if (!wrap) return [];
+  const arr = [];
+  wrap.querySelectorAll('input[data-cls]').forEach(function (cb) {
+    if (cb.checked) arr.push(+cb.getAttribute('data-cls'));
+  });
+  return arr;
+}
+
+/* ===================== 羁绊刷法 ===================== */
+function farmAddRow(name, base, ap, big) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = '<td><input value="' + (name || '') + '"></td>' +
+    '<td><input value="' + (base || '') + '"></td>' +
+    '<td><input value="' + (ap || '') + '"></td>' +
+    '<td><input value="' + (big || 0) + '"></td>' +
+    '<td><button class="mini gray farm-del">×</button></td>';
+  $('farm-quests').appendChild(tr);
+}
+function calcFarm() {
+  const cur = +$('farm-cur').value, tgt = +$('farm-tgt').value;
+  $('farm-msg').textContent = '';
+  if (!(tgt > cur)) { $('farm-out').innerHTML = '<div class="warn">目标羁绊值必须大于当前值。</div>'; return; }
+  const gap = tgt - cur;
+  const rows = [];
+  $('farm-quests').querySelectorAll('tr').forEach(function (tr) {
+    const c = tr.querySelectorAll('input');
+    if (c.length < 3) return;
+    const name = c[0].value.trim(), base = +c[1].value, ap = +c[2].value, big = (+c[3].value || 0) / 100;
+    if (!name || !(base > 0)) return;
+    rows.push({ name: name, base: base, ap: ap > 0 ? ap : 0, big: big });
+  });
+  if (!rows.length) { $('farm-out').innerHTML = '<div class="warn">先在副本表里加至少一张本（名称 + 基础羁绊）。</div>'; return; }
+  if (!P.base) { $('farm-out').innerHTML = '<div class="warn">机制参数里基础羁绊不能为 0。</div>'; return; }
+  readIn(); saveState();
+  let mult;
+  try {
+    const res = C.solve(P);
+    if (res.tooBig || !res.list.length) {
+      $('farm-out').innerHTML = '<div class="warn">当前编成算不出可行队，先去「自动最优」把约束放宽，或关掉「限定职介」。</div>';
+      return;
+    }
+    mult = res.list[0].total / P.base;
+  } catch (e) { $('farm-out').innerHTML = '<div class="err">算乘数出错：' + esc(e.message) + '</div>'; return; }
+  const BIG = 2;
+  const out = rows.map(function (q) {
+    const eff = q.base * mult * (1 + q.big * (BIG - 1));
+    const runs = Math.ceil(gap / eff);
+    return { q: q, eff: eff, runs: runs, totalAP: q.ap ? runs * q.ap : null };
+  });
+  out.sort(function (a, b) { return (a.totalAP == null ? 1e18 : a.totalAP) - (b.totalAP == null ? 1e18 : b.totalAP); });
+  let h = '<div class="card"><h2>刷法建议 <span class="hint">缺口 ' + fmt(gap) + '　最优队乘数 ≈ ' + mult.toFixed(3) + '</span></h2>' +
+    '<table class="tbl"><tr><th>副本</th><th>单轮进量</th><th>次数</th><th>总AP</th></tr>';
+  out.forEach(function (o) {
+    h += '<tr><td>' + esc(o.q.name) + '</td><td>' + fmt(Math.round(o.eff)) + '</td><td>' + fmt(o.runs) +
+      ' 次</td><td>' + (o.totalAP == null ? '—' : fmt(o.totalAP)) + '</td></tr>';
+  });
+  h += '</table><div class="note">单轮进量 = 副本基础羁绊 × 你最优队的乘数（已含 15 绊 / 玛修 / 前排 / 礼装）；大成功按 ' + BIG +
+    '× 折算期望。副本表由你维护——本地无全副本基础羁绊数据，按需要添加即可。</div></div>';
+  $('farm-out').innerHTML = h;
+}
+function bindFarm() {
+  $('farm-go').onclick = calcFarm;
+  $('farm-add').onclick = function () { farmAddRow('', '', '', 0); };
+  $('farm-quests').addEventListener('click', function (e) {
+    if (e.target && e.target.classList.contains('farm-del')) {
+      const tr = e.target.closest('tr'); if (tr && $('farm-quests').rows.length > 2) tr.remove();
+    }
+  });
+}
+
 root.CORE = {
   BOX: BOX, CE: CE, DATA: D, NCE: NCE, CLS: CLS, TRAIT: TRAIT,
   defP: defP, applyFsn: applyFsn, evalTeam: evalTeam, evalManual: evalManual, solve: solve,
@@ -1017,8 +1133,8 @@ function ceCoverCount(c) {
    本地存的旧 BOX 改动就作废，免得新旧数据混着算。 */
 const EMBED_STAMP = C.boxStamp(D.box);
 const PKEYS = ['base', 'costMax', 'b15', 'mash', 'mash15', 'frontN', 'frontSelf', 'fce',
-  'freeCrown', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15', 'fsn7',
-  'crownMode', 'crownPerGroup', 'plainTop', 'topN'];
+  'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15', 'fsn7',
+  'crownMode', 'crownPerGroup', 'plainTop', 'topN', 'classes'];
 
 function boxRows() {
   return BOX.map(function (s) {
@@ -1152,7 +1268,9 @@ function syncIn() {
   $('p-mash').value = P.mash; $('p-mash15').value = P.mash15;
   $('p-frontN').value = P.frontN; $('p-frontSelf').value = P.frontSelf;
   $('p-fce').value = P.fce; $('p-freeCrown').value = P.freeCrown;
+  $('p-mashBond').checked = !!P.mashBond;
   $('c-fsn7').checked = !!P.fsn7;
+  renderClassChips();
 }
 function readIn() {
   P.topN = +$('p-topN').value || 8;
@@ -1167,7 +1285,9 @@ function readIn() {
   P.b15 = +$('p-b15').value || 0; P.mash = +$('p-mash').value || 0;
   P.mash15 = +$('p-mash15').value || 0;
   P.frontN = +$('p-frontN').value || 0; P.frontSelf = +$('p-frontSelf').value || 0;
-  P.fce = +$('p-fce').value; P.freeCrown = +$('p-freeCrown').value;
+  P.fce = +$('p-fce').value; P.freeCrown = $('p-freeCrown').value;
+  P.mashBond = $('p-mashBond').checked;
+  P.classes = readClassChips();
   P._enKey = P.en.join('');
 }
 
@@ -1673,6 +1793,7 @@ const bootNotice = loadState();
 syncIn();
 fillClsSelect();
 bind();
+bindFarm();
 renderBox();
 renderCE();
 renderHelp();
