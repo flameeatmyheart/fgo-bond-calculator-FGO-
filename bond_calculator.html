@@ -862,9 +862,13 @@ function _snapshot(al, frPick, nrecv, fOwn, fnMax) {
 function buildPool(P) {
   const pool = [], seen = new Set();
   const cf = (P.classes && P.classes.length) ? P.classes : null;
+  /* 职介过滤必须发生在「组内排名 / 帕累托截断」之前：
+     否则限定职介时是「从跨职介选出的前 N 名里恰好挑出该职介的那几个」，
+     常常不足 5 人、直接算不出（2026-10-07 修）。 */
+  const inCf = function (s) { return !cf || cf.indexOf(s.cid) >= 0; };
   const add = function (s) {
     if (!s) return;
-    if (cf && cf.indexOf(s.cid) < 0) return;
+    if (!inCf(s)) return;
     if (!seen.has(s.id)) { seen.add(s.id); pool.push(s); }
   };
 
@@ -875,7 +879,7 @@ function buildPool(P) {
   const groups = {};
   for (let i = 0; i < BOX.length; i++) {
     const s = BOX[i];
-    if (!s.g || isMash(s)) continue;
+    if (!s.g || isMash(s) || !inCf(s)) continue;
     (groups[s.g] = groups[s.g] || []).push(s);
   }
   Object.keys(groups).forEach(function (g) {
@@ -884,7 +888,7 @@ function buildPool(P) {
     for (let i = 0; i < Math.min(P.crownPerGroup, lst.length); i++) add(lst[i]);
   });
   const plain = BOX.filter(function (s) {
-    return !isMash(s) && !s.g && s.bd < 15 && s.nm > 0;
+    return !isMash(s) && !s.g && s.bd < 15 && s.nm > 0 && inCf(s);
   });
   const front = plain.filter(function (a) {
     for (let i = 0; i < plain.length; i++) {
@@ -1301,13 +1305,48 @@ function doSolve() {
         '当前候选池 ' + res.pool.length + ' 骑。</div>';
       out.innerHTML = h; btn.disabled = false; return;
     }
+    // 「玛修必须上场」× 「限定职介」= 互斥：玛修是盾阶，会被职介过滤挡在池外，
+    // 于是任何组合都满足不了「必须含玛修」→ 必然无解。这种情况要说清楚，别甩 Cost 提示。
+    let poolHasMash = false;
+    for (let i = 0; i < res.pool.length; i++) {
+      if (C.isMash(res.pool[i])) { poolHasMash = true; break; }
+    }
+    if (P.mashIn && P.classes && P.classes.length && !poolHasMash) {
+      h = '<div class="warn"><b>凑不出队伍：你要求「玛修必须上场」，但玛修是盾阶，' +
+        '不在你勾选的限定职介里。</b><br>二选一即可 —— ' +
+        '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="mini" id="fix-mash-in">取消「玛修必须上场」，重算</button>' +
+        '<button class="mini" id="fix-mash-cls">清空限定职介，重算</button>' +
+        '</div></div>';
+      out.innerHTML = h; btn.disabled = false;
+      const bIn = $('fix-mash-in'), bCls = $('fix-mash-cls');
+      if (bIn) bIn.onclick = function () { $('p-mashIn').checked = false; doSolve(); };
+      if (bCls) bCls.onclick = function () {
+        const wrapC = $('p-classWrap');
+        if (wrapC) wrapC.querySelectorAll('input[data-cls]').forEach(function (cb) { cb.checked = false; });
+        doSolve();
+      };
+      return;
+    }
+    if (res.pool.length < 5) {
+      h = '<div class="warn"><b>候选池只有 ' + res.pool.length + ' 骑，凑不满 5 人的队伍。</b><br>' +
+        (P.classes && P.classes.length
+          ? '你勾了「限定职介」，池子里只剩这些职介的从者 —— 取消限定职介，' +
+            '或把「普通从者候选数」调大。'
+          : '把「每个冠位组保留」或「普通从者候选数」调大一点再算。') +
+        '</div>';
+      out.innerHTML = h; btn.disabled = false; return;
+    }
     if (!res.list.length) {
       h = '<div class="warn">没有满足条件的编成。检查一下 Cost 上限，或者取消「满绊者一律不上场／玛修必须上场」之类的硬约束。</div>';
       out.innerHTML = h; btn.disabled = false; return;
     }
     h += '<div class="card"><h2>候选池（' + res.pool.length + ' 骑）' +
       '<span class="hint">穷举就是在这批人里做的 —— 池子由「必含：已戴冠/15绊/玛修」+「每个冠位组前 ' +
-      P.crownPerGroup + ' 名」+「普通从者帕累托前沿前 ' + P.plainTop + ' 名」组成</span></h2>' +
+      P.crownPerGroup + ' 名」+「普通从者帕累托前沿前 ' + P.plainTop + ' 名」组成' +
+      ((P.classes && P.classes.length)
+        ? '；你勾了「限定职介」，以上三段都是<b>先按职介过滤再做选取</b>' : '') +
+      '</span></h2>' +
       '<div>' + res.pool.map(function (s) {
         return '<span class="pill" style="margin:2px 4px 2px 0">' + esc(s.n) + ' <span class="dim">' +
           clsName(s.cid) + ' Lv' + s.lv + ' 绊' + s.bd + ' C' + s.cs +
