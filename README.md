@@ -24,7 +24,7 @@ Six tabs:
 1. **自动最优 (Auto Optimal)** — exhaustive search over the candidate pool, top-N teams with per-servant bonus breakdown.
 2. **手动配队 (Manual)** — pick 5 servants, see the live breakdown.
 3. **我的 BOX (My Box)** — 275 servants, edit bond / crown state; import a new packet capture.
-4. **礼装 (Craft Essences)** — 46 essences, toggle and tune self / support / Cost.
+4. **礼装 (Craft Essences)** — 49 essences, toggle and tune self / support / Cost; one-click refresh from Mooncell.
 5. **机制参数 (Parameters)** — base bond, Cost cap, 15-bond / Mashu / front-row bonuses.
 6. **说明与依据 (Sources)** — data provenance for every rule.
 
@@ -38,10 +38,28 @@ To refresh your box from a new capture, drop the Reqable `ac.php` export onto
 the "我的 BOX" tab (it auto-decodes and rebuilds), or run the dev pipeline's
 `python update_box.py`.
 
+## Craft-essence data (礼装数据)
+
+The 49 bond-boosting craft essences are baked into the file. To pick up new
+ones without waiting for a rebuild, open the **礼装** tab and click
+**联网更新礼装（Mooncell）**: the page pulls the complete essence table from
+[Mooncell](https://fgo.wiki) (MediaWiki API — anonymous CORS is enabled, so a
+`file://` page can fetch it directly), diffs it against the local table, and
+stores only the missing entries in `localStorage`.
+
+- **Existing entries are never modified.** Condition parsing is best-effort;
+  an unrecognised condition makes the button *skip* that essence and say so,
+  rather than guessing and corrupting numbers that were already correct.
+- Bond-boosting essences store the **max-limit-break** value (e.g. 4% → 20%).
+- The trait ids used by essence conditions (`100` Saber, `101` Lancer,
+  `102` Archer, `103` Rider, `104` Caster, `105` Assassin, `106` Berserker,
+  `302` Neutral, …) were derived by set arithmetic over the servant static
+  table and cross-checked, not guessed.
+
 ## Highlights
 
 - **Single-file, fully offline** — ~190 KB HTML embedding a 275-servant box,
-  46 craft essences, a 474-servant static table, and the complete solver.
+  49 craft essences, a 474-servant static table, and the complete solver.
 - **Verified algorithm** — validated 60/60 against a Python brute-force oracle;
   regression-checked against prior conclusions; real-capture import is idempotent
   (275 servants, 0 field differences).

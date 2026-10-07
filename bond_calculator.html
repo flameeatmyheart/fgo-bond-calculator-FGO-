@@ -218,6 +218,11 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <button class="mini gray" id="btn-ce-std">只留 v7 那 20 张</button>
         <label class="chk" style="padding:0"><input type="checkbox" id="c-fsn7"> 英灵逢魔 7 张视为可同时装备</label>
       </div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="mini" id="btn-ce-update">联网更新礼装（Mooncell）</button>
+        <button class="mini gray" id="btn-ce-reset" style="display:none">清除联网新增</button>
+        <span class="note" id="ce-update-msg"></span>
+      </div>
       <div id="ce-table"></div>
       <div class="note" id="ce-note"></div>
     </div>
@@ -308,6 +313,30 @@ const TRAIT = D.trait;
 const MASH_CID = 8;
 
 const BOX = D.box.map(function (s) { return Object.assign({}, s); });
+
+/* ---- 「联网更新礼装」缓存下来的新礼装 ----
+   必须在这里合并：NCE、礼装位图、后面所有按「礼装索引」建的定长数组都在下面几行创建，
+   一旦错过就只能刷新页面。合并后由后面的 applyMask 重算从者位图。
+   沙箱预览（无 localStorage）会抛异常，直接跳过即可。 */
+const CE_EXTRA_KEY = 'fgo_bond_ce_extra_v1';
+let CE_EXTRA_N = 0;
+(function () {
+  try {
+    const raw = localStorage.getItem(CE_EXTRA_KEY);
+    if (!raw) return;
+    const box = JSON.parse(raw);
+    const list = (box && box.items) || [];
+    const have = {};
+    for (let i = 0; i < D.ce.length; i++) have[D.ce[i].no] = 1;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (!c || !c.no || have[c.no]) continue;
+      if (D.ce.length >= 64) break;         // 位图是 lo/hi 两个字，最多 64 张
+      D.ce.push(c); have[c.no] = 1; CE_EXTRA_N++;
+    }
+  } catch (e) { }
+})();
+
 const CE = D.ce.map(function (c) { return Object.assign({}, c); });
 const NCE = CE.length;
 
@@ -354,6 +383,20 @@ const STATIC = new Map();
     STATIC.set(String(r[0]), { col: r[1], cid: r[2], rar: r[3], cs: r[4], npc: r[5], n: r[6], t: r[7] });
   }
 })();
+
+/* 礼装表被「联网更新」扩过 → 从者的「可装备礼装位图」必须整体重算。
+   内嵌 BOX 只存了位图、没有特质数组，特质按 svtId 从静态表取。 */
+if (CE_EXTRA_N > 0) {
+  let missTr = 0;
+  BOX.forEach(function (s) {
+    const r = STATIC.get(String(s.id));
+    if (!r || !r.t) { missTr++; return; }   // 找不到就保留原位图，至少不会算错旧的
+    s.tr = r.t;
+    applyMask(s);
+    delete s.tr;
+  });
+  if (missTr) console.warn('[联网更新] ' + missTr + ' 骑在静态表里取不到特质，位图保持原样');
+}
 
 function ceMatchCt(ce, tset, cid) {
   const a = ce.t;
@@ -1575,6 +1618,250 @@ function renderBox() {
   });
 }
 
+/* ------------------------- 联网更新礼装（Mooncell） -------------------------
+   数据源：fgo.wiki 的「礼装图鉴/数据」页（MediaWiki）。该站对匿名请求开了
+   CORS（origin=*），所以 file:// 打开的本地页面也能直接 fetch，不用服务器。
+   策略：只「新增本地没有的」，不改动已有条目 —— 条件解析有风险，
+   宁可不加，也不能把本来算对的数据改错。失败一律不动现有数据。
+   -------------------------------------------------------------------------- */
+const CE_WIKI = 'https://fgo.wiki/api.php';
+const CE_KEEP_KEY = 'fgo_bond_ce_extra_v1';   // 必须与内核块合并时用的 key 一致
+
+/* 条件名 → 特质 id。id 取自 Mooncell 礼装条件，并用 D.svt 静态表做集合运算
+   交叉验证过（例：100 只出现在剑阶从者身上 → 100 = 剑阶）。 */
+const CE_TRAIT_ALIAS = {
+  '兽科': 2821, '兽科从者': 2821,
+  '今人类': 2654, '活在当下的人类': 2654, '活在当下的人类(部分拟似从者、亚从者等)': 2654,
+  '秩序': 300, '混沌': 301, '中立': 302,
+  '善': 303, '恶': 203, '中庸': 305,
+  '星之力': 304, '拥有星之力的从者': 304, '拥有星之力': 304,
+  '女性': 2,
+  'saber': 100, '剑阶': 100, '剑之骑士': 100,
+  'lancer': 101, '枪阶': 101, '枪之骑士': 101,
+  'archer': 102, '弓阶': 102, '弓之骑士': 102,
+  'rider': 103, '骑阶': 103, '骑兵': 103,
+  'caster': 104, '术阶': 104, '魔术师': 104,
+  'assassin': 105, '杀阶': 105, '暗杀者': 105,
+  'berserker': 106, '狂阶': 106, '狂战士': 106,
+  '持有灵衣': 2780, '持有灵衣之人': 2780, '持有灵衣者': 2780,
+  'fate/stay night从者': 2883, 'fate/stay night 从者': 2883
+};
+
+/* 从效果文本里抠出羁绊加成百分比：
+   「关卡通关时获得的牵绊值增加2%」「…增加增加1%」（站上原文笔误）「絆を2%増やす」 */
+function ceBondPct(s) {
+  if (!s) return null;
+  let m = s.match(/牵绊值增加(?:增加)?\s*(\d+(?:\.\d+)?)\s*%/);
+  if (m) return parseFloat(m[1]);
+  m = s.match(/絆(?:獲得量)?(?:を|の獲得量を)?\s*(\d+(?:\.\d+)?)\s*%/);
+  if (m) return parseFloat(m[1]);
+  return null;
+}
+
+function ceTraitId(name) {
+  const raw = String(name).trim();
+  const k = raw.toLowerCase();
+  if (CE_TRAIT_ALIAS[k] != null) return CE_TRAIT_ALIAS[k];
+  const stripped = k.replace(/(从者|特性|职阶|之人|者|的)$/g, '').replace(/^(拥有|持有)/, '');
+  if (CE_TRAIT_ALIAS[stripped] != null) return CE_TRAIT_ALIAS[stripped];
+  const keys = Object.keys(CE_TRAIT_ALIAS);
+  for (let i = 0; i < keys.length; i++) {
+    const a = keys[i];
+    if (a.length >= 2 && (k.indexOf(a) >= 0 || a.indexOf(k) >= 0)) return CE_TRAIT_ALIAS[a];
+  }
+  return null;
+}
+
+/* 把「〔…〕」条件翻成计算内核用的 t / ct */
+function ceParseCond(desc) {
+  const parts = [];
+  const re = /〔([^〕]+)〕/g;
+  let m;
+  while ((m = re.exec(desc))) parts.push(m[1].trim());
+  if (!parts.length) return { cond: '', t: [], ct: 'none' };
+  const seven = /七骑士/.test(desc);
+  const orRel = /或/.test(desc);
+  const ids = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (/七骑士/.test(parts[i])) continue;             // 「七骑士」不是特质，是职阶范围
+    const id = ceTraitId(parts[i]);
+    if (id == null) return { cond: parts.join(' / '), t: [], ct: 'unknown' };
+    ids.push(id);
+  }
+  if (seven) return { cond: parts.join(' 且 '), t: ids.slice(0, 1), ct: ids.length ? 'and7' : 'none' };
+  const ct = parts.length > 1 ? (orRel ? 'or' : 'and') : 'trait';
+  return { cond: parts.join(orRel ? ' 或 ' : ' 且 '), t: ids, ct: ct };
+}
+
+/* 解析「礼装图鉴/数据」：条目之间用空行分隔，每条是 key=value */
+function ceParseCatalog(text) {
+  const out = [];
+  const blocks = text.split(/\n[ \t]*\n/);
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const o = {};
+    const lines = blocks[bi].split('\n');
+    for (let li = 0; li < lines.length; li++) {
+      const ln = lines[li];
+      const p = ln.indexOf('=');
+      if (p > 0) o[ln.slice(0, p).trim()] = ln.slice(p + 1).trim();
+    }
+    if (!o.id || !o.name) continue;
+    const base = ceBondPct(o.des);
+    const max = ceBondPct(o.des_max);
+    if (base == null && max == null) continue;   // 不是百分比羁绊礼装（英灵肖像那种 +50 点固定值）
+    const v = max != null ? max : base;          // 站上给的是基础值，满破值在 des_max
+    const pc = ceParseCond(o.des || o.des_max || '');
+    out.push({ no: +o.id, name: o.name, title: o.name, r: v, cond: pc.cond, t: pc.t, ct: pc.ct });
+  }
+  return out;
+}
+
+function ceApi(params) {
+  return CE_WIKI + '?' + params + '&format=json&origin=*&_=' + Date.now();
+}
+
+async function ceFetchJson(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return await res.json();
+}
+
+function ceField(text, name) {
+  const m = text.match(new RegExp('\\|' + name + '=([^\\n|]*)'));
+  return m ? m[1].trim() : '';
+}
+
+/* 批量取页面正文（一次最多 50 个标题，这里 25 个一批更稳） */
+async function ceFetchMeta(titles) {
+  const meta = {};
+  for (let i = 0; i < titles.length; i += 25) {
+    const chunk = titles.slice(i, i + 25);
+    const j = await ceFetchJson(ceApi('action=query&prop=revisions&rvslots=main&rvprop=content&titles=' +
+      encodeURIComponent(chunk.join('|'))));
+    const pages = (j.query && j.query.pages) || {};
+    for (const k in pages) {
+      const p = pages[k];
+      meta[p.title] = {
+        missing: !!p.missing,
+        text: p.revisions && p.revisions[0] && p.revisions[0].slots &&
+              p.revisions[0].slots.main ? p.revisions[0].slots.main['*'] : ''
+      };
+    }
+  }
+  return meta;
+}
+
+/* 数据表里给的名字偶尔不是页面标题（日服先行的那几张），用搜索兜底 */
+async function ceSearchTitle(q) {
+  const j = await ceFetchJson(ceApi('action=query&list=search&srlimit=3&srsearch=' + encodeURIComponent(q)));
+  const arr = (j.query && j.query.search) || [];
+  if (!arr.length) return null;
+  const exact = arr.filter(function (x) { return x.title === q; })[0];
+  return (exact || arr[0]).title;
+}
+
+function ceExtraCount() {
+  try {
+    const raw = localStorage.getItem(CE_KEEP_KEY);
+    if (!raw) return 0;
+    return ((JSON.parse(raw) || {}).items || []).length;
+  } catch (e) { return 0; }
+}
+
+async function ceUpdate() {
+  const btn = $('btn-ce-update'), msg = $('ce-update-msg');
+  const say = function (s) { msg.innerHTML = s; };
+  btn.disabled = true;
+  try {
+    if (CE.length + 8 > 64) {
+      say('<b>礼装数已经逼近 64 张上限</b>（位图只有两个字），先别联网加了。');
+      btn.disabled = false; return;
+    }
+    say('正在从 Mooncell 拉取礼装总表…');
+    const j = await ceFetchJson(ceApi('action=parse&page=' +
+      encodeURIComponent('礼装图鉴/数据') + '&prop=wikitext'));
+    const text = j && j.parse && j.parse.wikitext && j.parse.wikitext['*'];
+    if (!text) throw new Error('总表内容为空（Mooncell 页面结构可能变了）');
+    const cands = ceParseCatalog(text);
+    if (!cands.length) throw new Error('总表里没解析出羁绊加成礼装');
+
+    const have = {};
+    for (let i = 0; i < CE.length; i++) have[CE[i].no] = 1;
+    const fresh = cands.filter(function (c) { return !have[c.no]; });
+    if (!fresh.length) {
+      say('已是最新 ✓ Mooncell 上共 <b>' + cands.length +
+        '</b> 张羁绊加成礼装，本地一张不缺。');
+      btn.disabled = false; return;
+    }
+    say('发现 <b>' + fresh.length + '</b> 张本地没有的，正在取详情（Cost / 中文名）…');
+
+    const meta = await ceFetchMeta(fresh.map(function (c) { return c.title; }));
+    const add = [], skip = [];
+    for (let i = 0; i < fresh.length; i++) {
+      const c = fresh[i];
+      let pg = meta[c.title];
+      if (!pg || pg.missing) {
+        const t2 = await ceSearchTitle(c.title);
+        if (t2) { const m2 = await ceFetchMeta([t2]); pg = m2[t2] || null; }
+      }
+      if (!pg || pg.missing || !pg.text) {
+        skip.push(c.name + '（页面上找不到）'); continue;
+      }
+      const icon = ceField(pg.text, '图标');
+      if (icon && icon.indexOf('牵绊') < 0) {
+        skip.push(c.name + '（图标是「' + icon + '」，不是羁绊类）'); continue;
+      }
+      const cn = ceField(pg.text, '名称') || c.name;
+      const cs = parseFloat(ceField(pg.text, 'cost'));
+      if (!(cs > 0)) { skip.push(cn + '（读不到 Cost）'); continue; }
+      if (c.ct === 'unknown' || (c.ct !== 'none' && !c.t.length)) {
+        skip.push(cn + '（条件「' + c.cond + '」认不出来）'); continue;
+      }
+      add.push({
+        no: c.no, n: cn, r: c.r, f: c.r, cs: cs,
+        r10: Math.round(c.r * 10), f10: Math.round(c.r * 10),
+        cond: c.cond, t: c.t, ct: c.ct, fsn: 0, jp: '', extra: 1
+      });
+    }
+
+    if (!add.length) {
+      say('本地缺 <b>' + fresh.length + '</b> 张，但都没能自动解析，已全部跳过：<br>' +
+        skip.map(function (s) { return '· ' + esc(s); }).join('<br>') +
+        '<br><span class="dim">这几张需要手工加。现有数据没有被改动。</span>');
+      btn.disabled = false; return;
+    }
+
+    let cache = { v: 1, items: [] };
+    try {
+      const old = localStorage.getItem(CE_KEEP_KEY);
+      if (old) cache = JSON.parse(old) || cache;
+    } catch (e) { }
+    const byNo = {};
+    (cache.items || []).forEach(function (c) { byNo[c.no] = c; });
+    add.forEach(function (c) { byNo[c.no] = c; });
+    cache.items = Object.keys(byNo).map(function (k) { return byNo[k]; });
+    cache.v = 1; cache.at = Date.now();
+    try {
+      localStorage.setItem(CE_KEEP_KEY, JSON.stringify(cache));
+    } catch (err) {
+      throw new Error('写不进本地存储（浏览器的隐私模式或沙箱预览会禁用 localStorage）：' +
+        (err && err.name ? err.name : err));
+    }
+
+    say('✓ 新增 <b>' + add.length + '</b> 张：' +
+      add.map(function (c) { return esc(c.n) + '（+' + c.r + '%，Cost ' + c.cs + '）'; }).join('、') +
+      (skip.length ? '<br>另有 ' + skip.length + ' 张没能自动解析，已跳过：' +
+        skip.map(function (s) { return '· ' + esc(s); }).join('<br>') : '') +
+      '<br>正在刷新页面应用…');
+    setTimeout(function () { location.reload(); }, 1600);
+  } catch (e) {
+    say('<b>更新失败：</b>' + esc(e.message) + '<br><span class="dim">' +
+      '常见原因：网络不通 / 被墙（可先开代理再试）/ Mooncell 改版。' +
+      '失败不会改动任何现有数据。</span>');
+    btn.disabled = false;
+  }
+}
+
 /* ------------------------------ 礼装 ------------------------------ */
 function renderCE() {
   $('ce-table').innerHTML =
@@ -1779,12 +2066,19 @@ function bind() {
     P._enKey = P.en.join(''); saveState(); renderCE();
   };
   $('btn-ce-std').onclick = function () {
-    const V7 = [1949, 2020, 2052, 2124, 2142, 2209, 2233, 2437, 2509, 330,
+    const V7 = [1949, 2020, 2052, 2124, 2142, 2209, 2233, 2437, 2509, 2583, 2607, 2701, 330,
                 1973, 1974, 1975, 1976, 1977, 1978, 1979, 1080, 910, 1121];
     CE.forEach(function (c, i) { P.en[i] = V7.indexOf(c.no) >= 0 ? 1 : 0; });
     P.fsn7 = true; $('c-fsn7').checked = true;
     P._enKey = P.en.join(''); saveState(); renderCE();
   };
+  $('btn-ce-update').onclick = function () { ceUpdate(); };
+  $('btn-ce-reset').onclick = function () {
+    if (!confirm('清除后，之前联网新增的礼装会从列表里消失（原有的礼装不受影响）。继续？')) return;
+    try { localStorage.removeItem(CE_KEEP_KEY); } catch (e) { }
+    location.reload();
+  };
+  if (ceExtraCount() > 0) $('btn-ce-reset').style.display = '';
   document.querySelectorAll('#tab-param input,#tab-param select').forEach(function (el) {
     el.addEventListener('change', function () { readIn(); saveState(); renderHelp(); });
   });
