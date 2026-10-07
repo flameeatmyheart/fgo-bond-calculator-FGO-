@@ -23,7 +23,7 @@ Six tabs:
 
 1. **自动最优 (Auto Optimal)** — exhaustive search over the candidate pool, top-N teams with per-servant bonus breakdown.
 2. **手动配队 (Manual)** — pick 5 servants, see the live breakdown.
-3. **我的 BOX (My Box)** — 275 servants, edit bond / crown state; import a new packet capture.
+3. **我的 BOX (My Box)** — 275 servants, edit bond / crown state; a per-servant **屏蔽 (exclude)** column; import a new packet capture.
 4. **礼装 (Craft Essences)** — 49 essences, toggle and tune self / support / Cost; one-click refresh from Mooncell.
 5. **机制参数 (Parameters)** — base bond, Cost cap, 15-bond / Mashu / front-row bonuses.
 6. **说明与依据 (Sources)** — data provenance for every rule.
@@ -37,6 +37,24 @@ pool, the servant static table, and the full solver — is embedded in the file.
 To refresh your box from a new capture, drop the Reqable `ac.php` export onto
 the "我的 BOX" tab (it auto-decodes and rebuilds), or run the dev pipeline's
 `python update_box.py`.
+
+## Exclusion list (屏蔽名单)
+
+Some of your servants should never enter the candidate pool — you are saving them
+for another team, they are already bonded out, or you simply do not want to bring
+them. The **我的 BOX** tab has a per-servant **屏蔽** column (plus a *只看已屏蔽*
+filter and *清空屏蔽名单* button), and a bulk helper that adds everyone at
+bond ≥ N in one click.
+
+- The list is **manual by design**. Bond caps are affected by 梦火 (Dreamfire) —
+  a non-crowned servant can be pushed past bond 10 — so the app cannot reliably
+  infer who is "already full". You decide; the calculator just honours it.
+- **Automatic Optimal** only. The **手动配队 (Manual)** tab is untouched: it is
+  your hand-picked team, so an excluded servant is still selectable there.
+- Excluded servants are removed *before* the crown-group / Pareto-front quota is
+  applied, so they do not silently eat one of the N candidate slots.
+- The list is saved with the rest of your state (and in the JSON export), and is
+  pruned automatically when you import a new box.
 
 ## Craft-essence data (礼装数据)
 
@@ -58,7 +76,7 @@ stores only the missing entries in `localStorage`.
 
 ## Highlights
 
-- **Single-file, fully offline** — ~190 KB HTML embedding a 275-servant box,
+- **Single-file, fully offline** — ~270 KB HTML embedding a 275-servant box,
   49 craft essences, a 474-servant static table, and the complete solver.
 - **Verified algorithm** — validated 60/60 against a Python brute-force oracle;
   regression-checked against prior conclusions; real-capture import is idempotent

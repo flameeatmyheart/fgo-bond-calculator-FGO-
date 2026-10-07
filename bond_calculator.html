@@ -89,7 +89,7 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
 <body>
 <header>
   <h1>羁绊计算器 <small>FGO 终章团体战 · 支柱七树战（国服约 2026-12-20）</small></h1>
-  <div class="sub" id="hdrsub">数据源：抓包 BOX（275 骑）· 礼装池 46 张 · 全部可编辑 · 离线单文件</div>
+  <div class="sub" id="hdrsub">数据源：抓包 BOX（275 骑）· 礼装池 49 张 · 全部可编辑 · 离线单文件</div>
 </header>
 <nav class="tabs" id="tabs">
   <button data-tab="solve" class="on">自动最优</button>
@@ -125,7 +125,7 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <label class="chk"><input type="checkbox" id="p-noMash"> 玛修不上场（换普通从者）</label>
         <label class="chk"><input type="checkbox" id="p-mcrown"> 给玛修戴冠（占一个 EX 名额，需撤下 1 个 EX 冠位）</label>
         <label class="chk"><input type="checkbox" id="p-m15"> 玛修已刷到 15 绊（她自己就吃不到羁绊了）</label>
-        <label class="chk"><input type="checkbox" id="p-noBondMax"> 屏蔽已满羁绊的从者（未戴冠满 10 / 已戴冠满 15，上场吃不到羁绊了）</label>
+        <div class="note" style="margin-top:0">手动屏蔽名单：<b id="p-blkn">0</b> 骑 —— 在「我的 BOX」页每行的「屏蔽」列勾选，被屏蔽的从者不进候选池（手动配队页不受影响）。<button class="mini gray" id="btn-blk-manage" style="margin-left:8px">去设置屏蔽名单</button></div>
       </div>
       <div style="margin-top:14px">
         <button class="primary" id="btn-solve">开始计算</button>
@@ -194,10 +194,18 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         </select>
         <label class="chk" style="padding:0"><input type="checkbox" id="b-onlycr"> 只看能戴冠</label>
         <label class="chk" style="padding:0"><input type="checkbox" id="b-onlygd"> 只看已戴冠</label>
+        <label class="chk" style="padding:0"><input type="checkbox" id="b-onlyblk"> 只看已屏蔽</label>
         <button class="mini gray" id="btn-reset">恢复抓包原始数据</button>
         <button class="mini gray" id="btn-export">导出全部状态 (JSON)</button>
         <button class="mini gray" id="btn-import">导入状态 (JSON)</button>
         <button class="mini gray" id="btn-export-box">导出 box.json</button>
+      </div>
+      <div class="flexbar" style="margin-top:8px">
+        <span class="dim" style="font-size:12px">屏蔽名单：<b id="box-blkn">0</b> 骑　批量把羁绊 ≥</span>
+        <input type="number" id="b-blkthr" value="10" min="0" max="15" style="width:64px">
+        <span class="dim" style="font-size:12px">的从者加入屏蔽</span>
+        <button class="mini gray" id="btn-blk-bythr">加入屏蔽</button>
+        <button class="mini gray" id="btn-blk-clear">清空屏蔽名单</button>
       </div>
       <div id="box-dump" style="display:none"><pre class="dump" id="box-dump-text"></pre>
         <div class="note">把上面的内容粘贴回来再点「导入状态 (JSON)」即可恢复。</div></div>
@@ -205,6 +213,7 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
       <div class="note">
         <b>羁绊</b>：0~15，15 = 电池（全队 +25%，自己 0 收益）。<b>可戴冠</b>：Lv100 + 三技能 310，
         勾上表示「打算练到这个条件」。<b>已戴冠</b>：账号上真的已经戴冠的那几位。<br>
+        <b>屏蔽</b>：勾上 = 不进「自动最优」的候选池；名单是<b>手动</b>的（羁绊上限受梦火影响，程序不替你判断谁「满了」）。<br>
         所有改动存在浏览器本地。HTML 里的数据一旦被换成新 BOX，旧的本地改动会自动作废并提示（避免新旧数据混着算）。
       </div>
     </div>
@@ -313,6 +322,17 @@ const TRAIT = D.trait;
 const MASH_CID = 8;
 
 const BOX = D.box.map(function (s) { return Object.assign({}, s); });
+
+/* ---- 手动屏蔽名单（用户点名不进候选池的从者 id）----
+   由界面块通过 C.setBlocked([...]) 注入；buildPool 按 id 剔除。
+   2026-10-08 用户提出：羁绊上限受「梦火」影响（未戴冠者也能被喂到 15 绊），
+   程序无法自动推断谁「已满羁绊」，所以改成让用户自己点名屏蔽。 */
+const BLOCKED = new Set();
+function setBlocked(ids) {
+  BLOCKED.clear();
+  if (ids) for (let i = 0; i < ids.length; i++) BLOCKED.add(+ids[i]);
+}
+function isBlocked(id) { return BLOCKED.has(+id); }
 
 /* ---- 「联网更新礼装」缓存下来的新礼装 ----
    必须在这里合并：NCE、礼装位图、后面所有按「礼装索引」建的定长数组都在下面几行创建，
@@ -534,7 +554,6 @@ function defP() {
     fce: 2,
     mashIn: true, mcrown: false, noMash: false,
     forceBat: false, noBat: false, all15: false, m15: false,
-    noBondMax: false,
     fsn7: false,
     crownMode: 'any',
     crownPerGroup: 3, plainTop: 22, topN: 8,
@@ -911,24 +930,19 @@ function buildPool(P) {
      否则限定职介时是「从跨职介选出的前 N 名里恰好挑出该职介的那几个」，
      常常不足 5 人、直接算不出（2026-10-07 修）。 */
   const inCf = function (s) { return !cf || cf.indexOf(s.cid) >= 0; };
-  /* 「屏蔽已满羁绊的从者」：
-     羁绊上限取决于是否戴冠 —— 未戴冠满 10、已戴冠满 15（勾了 all15 则按 15 算）。
-     到顶之后再上场，自己一点羁绊都吃不到，既无收益又占名额，勾上后直接从候选池剔除。
-     （用户 2026-10-07 提出；初版只拦了未戴冠的 10 绊，漏了已戴冠的 15 绊。）
-     玛修不在此列：她有 mashIn / noMash / m15 三个专属开关，且提供全队加成。 */
-  const blk = new Set();
-  let blockedMax = 0;
-  const isBondMax = function (s) {
-    if (isMash(s)) return false;
-    return s.gd ? bdEff(s, P) >= 15 : bdEff(s, P) >= 10;
+  /* 手动屏蔽名单（BLOCKED）：用户点名的从者直接不进候选池，也不占
+     「冠位组 / 普通从者」的名额。2026-10-08 改版 —— 原「屏蔽已满羁绊」自动
+     开关已废弃：羁绊上限受「梦火」影响，无法自动推断，改为用户逐骑点名。 */
+  const blockedHit = new Set();
+  const isBlk = function (s) {
+    if (!BLOCKED.has(s.id)) return false;
+    blockedHit.add(s.id);
+    return true;
   };
   const add = function (s) {
     if (!s) return;
     if (!inCf(s)) return;
-    if (P.noBondMax && isBondMax(s)) {
-      if (!blk.has(s.id)) { blk.add(s.id); blockedMax++; }
-      return;
-    }
+    if (isBlk(s)) return;
     if (!seen.has(s.id)) { seen.add(s.id); pool.push(s); }
   };
 
@@ -939,7 +953,7 @@ function buildPool(P) {
   const groups = {};
   for (let i = 0; i < BOX.length; i++) {
     const s = BOX[i];
-    if (!s.g || isMash(s) || !inCf(s)) continue;
+    if (!s.g || isMash(s) || !inCf(s) || isBlk(s)) continue;
     (groups[s.g] = groups[s.g] || []).push(s);
   }
   Object.keys(groups).forEach(function (g) {
@@ -948,7 +962,7 @@ function buildPool(P) {
     for (let i = 0; i < Math.min(P.crownPerGroup, lst.length); i++) add(lst[i]);
   });
   const plain = BOX.filter(function (s) {
-    return !isMash(s) && !s.g && s.bd < 15 && s.nm > 0 && inCf(s);
+    return !isMash(s) && !s.g && s.bd < 15 && s.nm > 0 && inCf(s) && !isBlk(s);
   });
   const front = plain.filter(function (a) {
     for (let i = 0; i < plain.length; i++) {
@@ -961,7 +975,7 @@ function buildPool(P) {
   });
   front.sort(function (a, b) { return b.nm - a.nm || a.cs - b.cs || a.bd - b.bd; });
   for (let i = 0; i < Math.min(P.plainTop, front.length); i++) add(front[i]);
-  P._blockedMax = blockedMax;
+  P._blockedN = blockedHit.size;
   return pool;
 }
 
@@ -1062,7 +1076,8 @@ root.CORE = {
   bdEff: bdEff, isMash: isMash, allocCE: allocCE, rebuildBits: rebuildBits,
   rebuildG: rebuildG, comb5: comb5, FRIEND: FRIEND, allocStats: _allocStats,
   decodeCapture: decodeCapture, importCapture: importCapture, boxStamp: boxStamp,
-  STATIC: STATIC
+  STATIC: STATIC,
+  setBlocked: setBlocked, isBlocked: isBlocked, BLOCKED: BLOCKED
 };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 </script>
@@ -1078,7 +1093,8 @@ const LSKEY = 'fgoBondCalcV1';
 let P = C.defP();
 let manual = [];
 let boxSort = 'cls';
-let boxFilter = { q: '', cls: '', onlyCr: false, onlyGd: false };
+let boxFilter = { q: '', cls: '', onlyCr: false, onlyGd: false, onlyBlk: false };
+let blockedIds = [];   // 手动屏蔽名单（从者 id 数组），持久化在 state.blk
 
 /* ------------------------------ 小工具 ------------------------------ */
 function esc(s) {
@@ -1118,7 +1134,7 @@ function ceCoverCount(c) {
 const EMBED_STAMP = C.boxStamp(D.box);
 const PKEYS = ['base', 'costMax', 'b15', 'mash', 'mash15', 'frontN', 'frontSelf', 'fce',
   'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15',
-  'noBondMax', 'fsn7',
+  'fsn7',
   'crownMode', 'crownPerGroup', 'plainTop', 'topN', 'classes'];
 
 function boxRows() {
@@ -1138,7 +1154,7 @@ function restoreBox(rows) {
   });
 }
 function saveState() {
-  const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows() };
+  const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice() };
   PKEYS.forEach(function (k) { o.p[k] = P[k]; });
   o.p.en = P.en.slice();
   CE.forEach(function (c) { o.ce[c.no] = [c.r, c.f, c.cs]; });
@@ -1150,6 +1166,7 @@ function loadState() {
   if (!o) return null;
   if (o.p) PKEYS.forEach(function (k) { if (o.p[k] !== undefined) P[k] = o.p[k]; });
   if (o.p && Array.isArray(o.p.en) && o.p.en.length === CE.length) P.en = o.p.en.slice();
+  if (Array.isArray(o.blk)) blockedIds = o.blk.map(Number).filter(function (x) { return x > 0; });
   if (o.ce) CE.forEach(function (c) {
     const v = o.ce[c.no];
     if (v) { c.r = v[0]; c.f = v[1]; c.cs = v[2]; }
@@ -1167,6 +1184,7 @@ function loadState() {
       };
     }
   }
+  applyBlocked();
   refreshAll();
   return notice;
 }
@@ -1184,6 +1202,7 @@ function refreshAll() {
 }
 function resetState() {
   try { localStorage.removeItem(LSKEY); } catch (e) { }
+  blockedIds = []; applyBlocked();
   P = C.defP();
   restoreBox(D.box.map(function (s) {
     return [s.id, s.n, s.cid, s.lv, s.bd, s.cs, s.r, s.cr, s.gd, s.lo, s.hi];
@@ -1209,6 +1228,7 @@ function handleCaptureText(txt, fileName) {
   if (!res.ok) { showCapMsg('err', esc(res.err)); return; }
   if (res.costMax) P.costMax = res.costMax;
   manual = []; lastSolve = null;
+  applyBlocked();   // 新 BOX 里可能已没有某些被屏蔽的从者 -> 顺手剔除失效 id
   $('manual-out').innerHTML = ''; $('solve-out').innerHTML = '';
   saveState(); syncIn(); renderBox(); renderCE(); renderHelp();
   const ms = Date.now() - t0;
@@ -1249,7 +1269,6 @@ function syncIn() {
   $('p-noBat').checked = !!P.noBat; $('p-forceBat').checked = !!P.forceBat;
   $('p-noMash').checked = !!P.noMash; $('p-mcrown').checked = !!P.mcrown;
   $('p-m15').checked = !!P.m15;
-  $('p-noBondMax').checked = !!P.noBondMax;
   $('p-base').value = P.base; $('p-costMax').value = P.costMax; $('p-b15').value = P.b15;
   $('p-mash').value = P.mash; $('p-mash15').value = P.mash15;
   $('p-frontN').value = P.frontN; $('p-frontSelf').value = P.frontSelf;
@@ -1267,7 +1286,6 @@ function readIn() {
   P.noBat = $('p-noBat').checked; P.forceBat = $('p-forceBat').checked;
   P.noMash = $('p-noMash').checked; P.mcrown = $('p-mcrown').checked;
   P.m15 = $('p-m15').checked;
-  P.noBondMax = $('p-noBondMax').checked;
   P.base = +$('p-base').value || 0; P.costMax = +$('p-costMax').value || 0;
   P.b15 = +$('p-b15').value || 0; P.mash = +$('p-mash').value || 0;
   P.mash15 = +$('p-mash15').value || 0;
@@ -1392,41 +1410,46 @@ function doSolve() {
       };
       return;
     }
-    // 「强制上满绊电池」× 「屏蔽已满羁绊的从者」= 互斥：
-    // 电池必须是羁绊已满的人，而屏蔽会把这类人全剔出池子 → 永远凑不出电池。
-    if (P.forceBat && P.noBondMax) {
-      h = '<div class="warn"><b>凑不出队伍：你同时要求「强制上满绊电池」和「屏蔽已满羁绊的从者」。</b><br>' +
-        '电池指的就是羁绊已满的从者 —— 屏蔽掉他们之后，池子里一个电池都不剩。<br>' +
+    // 「强制上满绊电池」需要池里有 15 绊的人；若候选池一个 15 绊都没有
+    // （常见于把满绊从者全加进了手动屏蔽名单），直接说清楚怎么解。
+    let poolHasBat = false;
+    for (let i = 0; i < res.pool.length; i++) {
+      if (C.bdEff(res.pool[i], P) >= 15) { poolHasBat = true; break; }
+    }
+    if (P.forceBat && !poolHasBat) {
+      h = '<div class="warn"><b>凑不出队伍：你要求「强制上满绊电池」，但候选池里一个 15 绊从者都没有。</b><br>' +
+        '电池必须是羁绊已满（15 绊）的人；被加进屏蔽名单、或没进候选池的从者都用不了。' +
+        (blockedIds.length ? '<br>你当前屏蔽了 <b>' + blockedIds.length + '</b> 骑。' : '') +
         '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
         '<button class="mini" id="fix-bat-off">取消「强制上满绊电池」，重算</button>' +
-        '<button class="mini" id="fix-blkmax-off">取消「屏蔽已满羁绊的从者」，重算</button>' +
+        (blockedIds.length ? '<button class="mini" id="fix-blk-clear">清空屏蔽名单，重算</button>' : '') +
         '</div></div>';
       out.innerHTML = h; btn.disabled = false;
-      const bBat = $('fix-bat-off'), bBlk = $('fix-blkmax-off');
+      const bBat = $('fix-bat-off'), bClr = $('fix-blk-clear');
       if (bBat) bBat.onclick = function () { $('p-forceBat').checked = false; doSolve(); };
-      if (bBlk) bBlk.onclick = function () { $('p-noBondMax').checked = false; doSolve(); };
+      if (bClr) bClr.onclick = function () { blockedIds = []; applyBlocked(); saveState(); doSolve(); };
       return;
     }
     if (res.pool.length < 5) {
-      const blkMax = P.noBondMax ? (P._blockedMax || 0) : 0;
+      const blkMax = P._blockedN || 0;
       h = '<div class="warn"><b>候选池只有 ' + res.pool.length + ' 骑，凑不满 5 人的队伍。</b><br>' +
         (P.classes && P.classes.length
           ? '你勾了「限定职介」，池子里只剩这些职介的从者 —— 取消限定职介，' +
             '或把「普通从者候选数」调大。'
           : '把「每个冠位组保留」或「普通从者候选数」调大一点再算。') +
         (blkMax > 0
-          ? '<br>另外「屏蔽已满羁绊的从者」已从池里剔除 <b>' + blkMax + '</b> 骑。' +
+          ? '<br>另外你的<b>屏蔽名单</b>已从池里剔除 <b>' + blkMax + '</b> 骑。' +
             '<div style="margin-top:8px"><button class="mini" id="fix-unblkmax">' +
-            '取消「屏蔽已满羁绊的从者」，重算</button></div>'
+            '清空屏蔽名单，重算</button></div>'
           : '') +
         '</div>';
       out.innerHTML = h; btn.disabled = false;
       const bUn = $('fix-unblkmax');
-      if (bUn) bUn.onclick = function () { $('p-noBondMax').checked = false; doSolve(); };
+      if (bUn) bUn.onclick = function () { blockedIds = []; applyBlocked(); saveState(); doSolve(); };
       return;
     }
     if (!res.list.length) {
-      h = '<div class="warn">没有满足条件的编成。检查一下 Cost 上限，或者取消「满绊者一律不上场／屏蔽已满羁绊／玛修必须上场」之类的硬约束。</div>';
+      h = '<div class="warn">没有满足条件的编成。检查一下 Cost 上限，或者取消「满绊者一律不上场／手动屏蔽名单／玛修必须上场」之类的硬约束。</div>';
       out.innerHTML = h; btn.disabled = false; return;
     }
     h += '<div class="card"><h2>候选池（' + res.pool.length + ' 骑）' +
@@ -1434,8 +1457,8 @@ function doSolve() {
       P.crownPerGroup + ' 名」+「普通从者帕累托前沿前 ' + P.plainTop + ' 名」组成' +
       ((P.classes && P.classes.length)
         ? '；你勾了「限定职介」，以上三段都是<b>先按职介过滤再做选取</b>' : '') +
-      ((P.noBondMax && P._blockedMax)
-        ? '；已按你的设置<b>屏蔽 ' + P._blockedMax + ' 骑</b>已满羁绊的从者' : '') +
+      ((P._blockedN)
+        ? '；已按你的<b>屏蔽名单</b>剔除 <b>' + P._blockedN + ' 骑</b>' : '') +
       '</span></h2>' +
       '<div>' + res.pool.map(function (s) {
         return '<span class="pill" style="margin:2px 4px 2px 0">' + esc(s.n) + ' <span class="dim">' +
@@ -1566,6 +1589,39 @@ function fillClsSelect() {
     return '<option value="' + k + '">' + clsName(k) + '（' + used[k] + '）</option>';
   }).join('');
 }
+/* ---------------- 手动屏蔽名单 ----------------
+   用户 2026-10-08：羁绊上限受梦火影响，自动判断「是否已满羁绊」不可靠，
+   改为让用户自己逐骑点名屏蔽。名单存本地，被点名的从者不进自动最优候选池；
+   手动配队页不受影响（那里是用户亲手点的）。 */
+function syncBlkUI() {
+  const n = blockedIds.length;
+  const a = $('p-blkn'); if (a) a.textContent = n;
+  const b = $('box-blkn'); if (b) b.textContent = n;
+}
+function applyBlocked() {
+  const have = {};
+  for (let i = 0; i < BOX.length; i++) have[BOX[i].id] = 1;
+  blockedIds = blockedIds.filter(function (id) { return have[id]; });  // 换新 BOX 后剔除失效 id
+  C.setBlocked(blockedIds);
+  syncBlkUI();
+}
+function isBlkId(id) { return blockedIds.indexOf(+id) >= 0; }
+function setBlkId(id, on) {
+  id = +id;
+  const i = blockedIds.indexOf(id);
+  if (on && i < 0) blockedIds.push(id);
+  else if (!on && i >= 0) blockedIds.splice(i, 1);
+  applyBlocked(); saveState();
+}
+function blkByThreshold(thr) {
+  let added = 0;
+  BOX.forEach(function (s) {
+    if (s.bd >= thr && !isBlkId(s.id)) { blockedIds.push(s.id); added++; }
+  });
+  applyBlocked(); saveState();
+  return added;
+}
+
 function renderBox() {
   $('box-n').textContent = BOX.length;
   const q = boxFilter.q.toLowerCase();
@@ -1573,6 +1629,7 @@ function renderBox() {
     if (boxFilter.cls && String(s.cid) !== boxFilter.cls) return false;
     if (boxFilter.onlyCr && !s.cr) return false;
     if (boxFilter.onlyGd && !s.gd) return false;
+    if (boxFilter.onlyBlk && !isBlkId(s.id)) return false;
     if (q && (s.n + ' ' + clsName(s.cid)).toLowerCase().indexOf(q) < 0) return false;
     return true;
   });
@@ -1587,14 +1644,15 @@ function renderBox() {
   $('box-table').innerHTML =
     '<table><thead><tr><th>从者</th><th>职阶</th><th>等级</th><th>Cost</th>' +
     '<th style="width:90px">羁绊</th><th style="width:70px">可戴冠</th>' +
-    '<th style="width:70px">已戴冠</th><th>匹配礼装</th></tr></thead><tbody>' +
+    '<th style="width:70px">已戴冠</th><th style="width:60px">屏蔽</th><th>匹配礼装</th></tr></thead><tbody>' +
     lst.map(function (s) {
-      return '<tr><td>' + esc(s.n) + '</td><td class="dim">' + clsName(s.cid) + '</td>' +
+      return '<tr' + (isBlkId(s.id) ? ' style="opacity:.5"' : '') + '><td>' + esc(s.n) + '</td><td class="dim">' + clsName(s.cid) + '</td>' +
         '<td>' + s.lv + '</td><td class="num">' + s.cs + '</td>' +
         '<td><input type="number" min="0" max="15" value="' + s.bd +
         '" style="width:64px" data-b="' + s.id + '"></td>' +
         '<td><input type="checkbox" ' + (s.cr ? 'checked' : '') + ' data-c="' + s.id + '"></td>' +
         '<td><input type="checkbox" ' + (s.gd ? 'checked' : '') + ' data-g="' + s.id + '"></td>' +
+        '<td><input type="checkbox" ' + (isBlkId(s.id) ? 'checked' : '') + ' data-k="' + s.id + '"></td>' +
         '<td class="dim">' + s.nm + ' 张</td></tr>';
     }).join('') + '</tbody></table>';
   $('box-table').querySelectorAll('[data-b]').forEach(function (el) {
@@ -1616,6 +1674,10 @@ function renderBox() {
       s.gd = el.checked ? 1 : 0; saveState();
     };
   });
+  $('box-table').querySelectorAll('[data-k]').forEach(function (el) {
+    el.onchange = function () { setBlkId(+el.getAttribute('data-k'), el.checked); renderBox(); };
+  });
+  syncBlkUI();
 }
 
 /* ------------------------- 联网更新礼装（Mooncell） -------------------------
@@ -1949,10 +2011,13 @@ function renderHelp() {
       'WorkBuddy 旧版把 classId 23 标成「裁」、25 标成「月」、28 标成「外」。' +
       '按数据集核对：<b>23 = MoonCancer(月)</b>、<b>25 = Foreigner(降)</b>、<b>28 = Pretender(伪)</b>。' +
       '（所以 C.I.E.L 其实是「月」不是「伪」。）') +
-    row('礼装池从 20 张扩到 46 张',
-      '旧版漏了 3 张 +5%、3 张 +2.5%、21 张 +2% 的常驻礼装。同时发现旧提取脚本的实装日过滤是' +
-      '<b>字符串比较</b>（在比 unix 时间戳），完全失效，会误纳 3 张 2026 年日服才实装的 +20% 礼装' +
-      '（记忆的大图书馆 / 流転の剣聖 / ガン・ディーラー）—— 已按数值比较正确剔除。') +
+    row('礼装池现在共 ' + CE.length + ' 张',
+      '从 20 张一路扩到 46 张（补回 3 张 +5%、3 张 +2.5%、21 张 +2% 的常驻礼装），' +
+      '2026-10-07 又补进 3 张日服先行、满破 +20% 的（记忆的大图书馆 / 流転の剣聖 / ガン・ディーラー）→ 49 张。' +
+      '这 3 张可用「礼装」页的<b>联网更新（Mooncell）</b>按钮随时重抓；策略是只新增本地缺的、不改已有数据。') +
+    row('屏蔽名单是<b>手动</b>的，不是自动判断',
+      '羁绊上限受<b>梦火</b>影响 —— 未戴冠的从者也能被喂到 15 绊，程序无法可靠推断谁「已满」。' +
+      '所以「我的 BOX」页加了一列<b>屏蔽</b>：你自己点名，被点名的从者不进自动最优候选池。') +
     row('英灵逢魔 7 张按 1 张算',
       '你确认「实际只能拿/只能上一张」。想试 7 张全开，在「礼装」页勾上开关即可。') +
     '</tbody></table>';
@@ -1994,12 +2059,26 @@ function bind() {
   $('b-sort').onchange = function () { boxSort = $('b-sort').value; renderBox(); };
   $('b-onlycr').onchange = function () { boxFilter.onlyCr = $('b-onlycr').checked; renderBox(); };
   $('b-onlygd').onchange = function () { boxFilter.onlyGd = $('b-onlygd').checked; renderBox(); };
+  $('b-onlyblk').onchange = function () { boxFilter.onlyBlk = $('b-onlyblk').checked; renderBox(); };
+  $('btn-blk-clear').onclick = function () {
+    if (!blockedIds.length) { alert('屏蔽名单现在是空的。'); return; }
+    if (!confirm('清空屏蔽名单？（被屏蔽的 ' + blockedIds.length + ' 骑将重新进入候选池）')) return;
+    blockedIds = []; applyBlocked(); saveState(); renderBox();
+  };
+  $('btn-blk-bythr').onclick = function () {
+    const thr = Math.max(0, Math.min(15, +$('b-blkthr').value || 0));
+    const added = blkByThreshold(thr);
+    renderBox();
+    alert(added ? ('已把羁绊 ≥ ' + thr + ' 的 ' + added + ' 骑加入屏蔽名单。')
+                : ('没有新增：羁绊 ≥ ' + thr + ' 的从者都已在名单里。'));
+  };
+  $('btn-blk-manage').onclick = function () { switchTab('box'); renderBox(); };
   $('btn-reset').onclick = function () {
     if (!confirm('恢复成抓包时的原始 BOX / 礼装 / 参数？你自己改过的都会被清掉。')) return;
     resetState(); syncIn(); renderBox(); renderCE(); renderHelp();
   };
   $('btn-export').onclick = function () {
-    const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows() };
+    const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice() };
     PKEYS.forEach(function (k) { o.p[k] = P[k]; });
     o.p.en = P.en.slice();
     CE.forEach(function (c) { o.ce[c.no] = [c.r, c.f, c.cs]; });
@@ -2040,7 +2119,9 @@ function bind() {
       const o = JSON.parse(txt);
       if (o.p) PKEYS.forEach(function (k) { if (o.p[k] !== undefined) P[k] = o.p[k]; });
       if (o.p && Array.isArray(o.p.en) && o.p.en.length === CE.length) P.en = o.p.en.slice();
+      if (Array.isArray(o.blk)) blockedIds = o.blk.map(Number).filter(function (x) { return x > 0; });
       if (o.box && Array.isArray(o.box) && o.box.length && Array.isArray(o.box[0])) restoreBox(o.box);
+      applyBlocked();
       if (o.ce) CE.forEach(function (c) { const v = o.ce[c.no]; if (v) { c.r = v[0]; c.f = v[1]; c.cs = v[2]; } });
       refreshAll(); saveState(); syncIn(); renderBox(); renderCE(); renderHelp();
       alert('导入成功：' + BOX.length + ' 骑');
@@ -2687,6 +2768,7 @@ function bindFarm() {
 /* ------------------------------ 启动 ------------------------------ */
 const bootNotice = loadState();
 syncIn();
+applyBlocked();
 fillClsSelect();
 bind();
 bindFarm();

@@ -6,3 +6,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# 本地改动前的临时备份（脚本自动生成，不进仓库）
+*.bak
+*.bak_*
+*.broken.bak
