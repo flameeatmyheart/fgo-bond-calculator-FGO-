@@ -125,6 +125,7 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <label class="chk"><input type="checkbox" id="p-noMash"> 玛修不上场（换普通从者）</label>
         <label class="chk"><input type="checkbox" id="p-mcrown"> 给玛修戴冠（占一个 EX 名额，需撤下 1 个 EX 冠位）</label>
         <label class="chk"><input type="checkbox" id="p-m15"> 玛修已刷到 15 绊（她自己就吃不到羁绊了）</label>
+        <label class="chk"><input type="checkbox" id="p-noFull10"> 屏蔽 10 绊及以上的非冠位从者（未戴冠的已经刷满、吃不到羁绊了）</label>
       </div>
       <div style="margin-top:14px">
         <button class="primary" id="btn-solve">开始计算</button>
@@ -490,6 +491,7 @@ function defP() {
     fce: 2,
     mashIn: true, mcrown: false, noMash: false,
     forceBat: false, noBat: false, all15: false, m15: false,
+    noFull10: false,
     fsn7: false,
     crownMode: 'any',
     crownPerGroup: 3, plainTop: 22, topN: 8,
@@ -866,9 +868,22 @@ function buildPool(P) {
      否则限定职介时是「从跨职介选出的前 N 名里恰好挑出该职介的那几个」，
      常常不足 5 人、直接算不出（2026-10-07 修）。 */
   const inCf = function (s) { return !cf || cf.indexOf(s.cid) >= 0; };
+  /* 「屏蔽 10 绊及以上的非冠位从者」：
+     未戴冠者（!s.gd）的羁绊上限就是 10，刷满之后再上场也吃不到任何羁绊 ——
+     既不贡献收益又占名额。勾上后这类人直接从候选池剔除（用户 2026-10-07 提出）。
+     玛修不在此列：她有 mashIn / noMash / m15 三个专属开关，且提供全队加成。 */
+  const blk = new Set();
+  let blocked10 = 0;
+  const isFull10 = function (s) {
+    return !s.gd && !isMash(s) && bdEff(s, P) >= 10;
+  };
   const add = function (s) {
     if (!s) return;
     if (!inCf(s)) return;
+    if (P.noFull10 && isFull10(s)) {
+      if (!blk.has(s.id)) { blk.add(s.id); blocked10++; }
+      return;
+    }
     if (!seen.has(s.id)) { seen.add(s.id); pool.push(s); }
   };
 
@@ -901,6 +916,7 @@ function buildPool(P) {
   });
   front.sort(function (a, b) { return b.nm - a.nm || a.cs - b.cs || a.bd - b.bd; });
   for (let i = 0; i < Math.min(P.plainTop, front.length); i++) add(front[i]);
+  P._blocked10 = blocked10;
   return pool;
 }
 
@@ -1056,7 +1072,8 @@ function ceCoverCount(c) {
    本地存的旧 BOX 改动就作废，免得新旧数据混着算。 */
 const EMBED_STAMP = C.boxStamp(D.box);
 const PKEYS = ['base', 'costMax', 'b15', 'mash', 'mash15', 'frontN', 'frontSelf', 'fce',
-  'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15', 'fsn7',
+  'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15',
+  'noFull10', 'fsn7',
   'crownMode', 'crownPerGroup', 'plainTop', 'topN', 'classes'];
 
 function boxRows() {
@@ -1187,6 +1204,7 @@ function syncIn() {
   $('p-noBat').checked = !!P.noBat; $('p-forceBat').checked = !!P.forceBat;
   $('p-noMash').checked = !!P.noMash; $('p-mcrown').checked = !!P.mcrown;
   $('p-m15').checked = !!P.m15;
+  $('p-noFull10').checked = !!P.noFull10;
   $('p-base').value = P.base; $('p-costMax').value = P.costMax; $('p-b15').value = P.b15;
   $('p-mash').value = P.mash; $('p-mash15').value = P.mash15;
   $('p-frontN').value = P.frontN; $('p-frontSelf').value = P.frontSelf;
@@ -1204,6 +1222,7 @@ function readIn() {
   P.noBat = $('p-noBat').checked; P.forceBat = $('p-forceBat').checked;
   P.noMash = $('p-noMash').checked; P.mcrown = $('p-mcrown').checked;
   P.m15 = $('p-m15').checked;
+  P.noFull10 = $('p-noFull10').checked;
   P.base = +$('p-base').value || 0; P.costMax = +$('p-costMax').value || 0;
   P.b15 = +$('p-b15').value || 0; P.mash = +$('p-mash').value || 0;
   P.mash15 = +$('p-mash15').value || 0;
@@ -1329,16 +1348,25 @@ function doSolve() {
       return;
     }
     if (res.pool.length < 5) {
+      const blk10 = P.noFull10 ? (P._blocked10 || 0) : 0;
       h = '<div class="warn"><b>候选池只有 ' + res.pool.length + ' 骑，凑不满 5 人的队伍。</b><br>' +
         (P.classes && P.classes.length
           ? '你勾了「限定职介」，池子里只剩这些职介的从者 —— 取消限定职介，' +
             '或把「普通从者候选数」调大。'
           : '把「每个冠位组保留」或「普通从者候选数」调大一点再算。') +
+        (blk10 > 0
+          ? '<br>另外「屏蔽 10 绊及以上的非冠位从者」已从池里剔除 <b>' + blk10 + '</b> 骑。' +
+            '<div style="margin-top:8px"><button class="mini" id="fix-unblk10">' +
+            '取消「屏蔽 10 绊及以上的非冠位从者」，重算</button></div>'
+          : '') +
         '</div>';
-      out.innerHTML = h; btn.disabled = false; return;
+      out.innerHTML = h; btn.disabled = false;
+      const bUn = $('fix-unblk10');
+      if (bUn) bUn.onclick = function () { $('p-noFull10').checked = false; doSolve(); };
+      return;
     }
     if (!res.list.length) {
-      h = '<div class="warn">没有满足条件的编成。检查一下 Cost 上限，或者取消「满绊者一律不上场／玛修必须上场」之类的硬约束。</div>';
+      h = '<div class="warn">没有满足条件的编成。检查一下 Cost 上限，或者取消「满绊者一律不上场／屏蔽 10 绊及以上的非冠位／玛修必须上场」之类的硬约束。</div>';
       out.innerHTML = h; btn.disabled = false; return;
     }
     h += '<div class="card"><h2>候选池（' + res.pool.length + ' 骑）' +
@@ -1346,6 +1374,8 @@ function doSolve() {
       P.crownPerGroup + ' 名」+「普通从者帕累托前沿前 ' + P.plainTop + ' 名」组成' +
       ((P.classes && P.classes.length)
         ? '；你勾了「限定职介」，以上三段都是<b>先按职介过滤再做选取</b>' : '') +
+      ((P.noFull10 && P._blocked10)
+        ? '；已按你的设置<b>屏蔽 ' + P._blocked10 + ' 骑</b> 10 绊及以上的非冠位从者' : '') +
       '</span></h2>' +
       '<div>' + res.pool.map(function (s) {
         return '<span class="pill" style="margin:2px 4px 2px 0">' + esc(s.n) + ' <span class="dim">' +
