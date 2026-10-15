@@ -197,6 +197,8 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <label class="chk" style="padding:0"><input type="checkbox" id="b-onlycr"> 只看能戴冠</label>
         <label class="chk" style="padding:0"><input type="checkbox" id="b-onlygd"> 只看已戴冠</label>
         <label class="chk" style="padding:0"><input type="checkbox" id="b-onlyblk"> 只看已屏蔽</label>
+        <label class="chk" style="padding:0"><input type="checkbox" id="b-onlypool"> 只看候选池内</label>
+        <label class="chk" style="padding:0"><input type="checkbox" id="b-onlyout"> 只看池外</label>
         <button class="mini gray" id="btn-reset">恢复抓包原始数据</button>
         <button class="mini gray" id="btn-export">导出全部状态 (JSON)</button>
         <button class="mini gray" id="btn-import">导入状态 (JSON)</button>
@@ -208,6 +210,12 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <span class="dim" style="font-size:12px">的从者加入屏蔽</span>
         <button class="mini gray" id="btn-blk-bythr">加入屏蔽</button>
         <button class="mini gray" id="btn-blk-clear">清空屏蔽名单</button>
+      </div>
+      <div class="flexbar" style="margin-top:8px;padding:8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
+        <span class="dim" style="font-size:12px"><b>候选池手动调整</b>：拉进 <b id="box-addn">0</b> 骑　踢出 <b id="box-deln">0</b> 骑</span>
+        <label class="chk" style="padding:0"><input type="checkbox" id="b-poolfull"> <b>全量模式</b>（不做自动截断，把所有未屏蔽者都放进池）</label>
+        <button class="mini gray" id="btn-pool-clear">清空手动增删</button>
+        <button class="mini gray" id="btn-pool-recalc">按当前池重算</button>
       </div>
       <div id="box-dump" style="display:none"><pre class="dump" id="box-dump-text"></pre>
         <div class="note">把上面的内容粘贴回来再点「导入状态 (JSON)」即可恢复。</div></div>
@@ -580,6 +588,7 @@ function defP() {
        fce          = 好友冠位的礼装框数（1 常规助战框 + 1 冠位额外框 = 2 张） */
     needCrown: true,
     maxCost: true,
+    poolFull: false,   // [2026-10-15] 全量模式：不做启发式截断（漏解时用）
     en: CE.map(function () { return 1; })
   };
   return applyFsn(P);
@@ -951,6 +960,18 @@ function _snapshot(al, frPick, nrecv, fOwn, fnMax) {
 }
 
 /* ============================ 候选池 ============================ */
+/* [2026-10-15 新增] 用户手动调整候选池：
+   POOL_ADD = 强制拉进池的从者 id（无视自动截断）
+   POOL_DEL = 强制踢出池的从者 id（即使自动逻辑选中了）
+   用途：自动截断是启发式的，实测会漏掉更优解（限定枪阶时差 11.6%），
+   所以允许用户先看自动结果、再自由增删，然后用定稿的池重算。 */
+const POOL_ADD = new Set();
+const POOL_DEL = new Set();
+function setPoolAdd(ids) { POOL_ADD.clear(); if (ids) for (let i = 0; i < ids.length; i++) POOL_ADD.add(+ids[i]); }
+function setPoolDel(ids) { POOL_DEL.clear(); if (ids) for (let i = 0; i < ids.length; i++) POOL_DEL.add(+ids[i]); }
+function isPoolAdd(id) { return POOL_ADD.has(+id); }
+function isPoolDel(id) { return POOL_DEL.has(+id); }
+
 function buildPool(P) {
   const pool = [], seen = new Set();
   const cf = (P.classes && P.classes.length) ? P.classes : null;
@@ -967,10 +988,14 @@ function buildPool(P) {
     blockedHit.add(s.id);
     return true;
   };
+  /* 手动踢出（POOL_DEL）与屏蔽等效，但语义是「这次不算他」而非永久屏蔽；
+     手动拉进（POOL_ADD）能绕过所有自动截断，但仍受职阶过滤与屏蔽名单约束。 */
+  const delHit = new Set();
   const add = function (s) {
     if (!s) return;
     if (!inCf(s)) return;
     if (isBlk(s)) return;
+    if (POOL_DEL.has(s.id)) { delHit.add(s.id); return; }
     if (!seen.has(s.id)) { seen.add(s.id); pool.push(s); }
   };
 
@@ -978,10 +1003,23 @@ function buildPool(P) {
     const s = BOX[i];
     if (s.gd || s.bd >= 15 || isMash(s)) add(s);      // 必含：已戴冠 / 15绊 / 玛修
   }
+
+  /* [新增] 全量模式：不做任何启发式截断，把所有符合条件的人都放进池。
+     组合数由 solve() 的 tooBig 保护兜底（超 350 万就提示调小）。 */
+  if (P.poolFull) {
+    for (let i = 0; i < BOX.length; i++) add(BOX[i]);
+    /* 手动拉进的也补一遍（add 已含职阶/屏蔽过滤） */
+    BOX.forEach(function (s) { if (POOL_ADD.has(s.id)) add(s); });
+    P._blockedN = blockedHit.size;
+    P._poolDelN = delHit.size;
+    P._poolAddN = pool.filter(function (s) { return POOL_ADD.has(s.id); }).length;
+    return pool;
+  }
+
   const groups = {};
   for (let i = 0; i < BOX.length; i++) {
     const s = BOX[i];
-    if (!s.g || isMash(s) || !inCf(s) || isBlk(s)) continue;
+    if (!s.g || isMash(s) || !inCf(s) || isBlk(s) || POOL_DEL.has(s.id)) continue;
     (groups[s.g] = groups[s.g] || []).push(s);
   }
   Object.keys(groups).forEach(function (g) {
@@ -990,7 +1028,7 @@ function buildPool(P) {
     for (let i = 0; i < Math.min(P.crownPerGroup, lst.length); i++) add(lst[i]);
   });
   const plain = BOX.filter(function (s) {
-    return !isMash(s) && !s.g && s.bd < 15 && s.nm > 0 && inCf(s) && !isBlk(s);
+    return !isMash(s) && !s.g && s.bd < 15 && s.nm > 0 && inCf(s) && !isBlk(s) && !POOL_DEL.has(s.id);
   });
   const front = plain.filter(function (a) {
     for (let i = 0; i < plain.length; i++) {
@@ -1003,7 +1041,11 @@ function buildPool(P) {
   });
   front.sort(function (a, b) { return b.nm - a.nm || a.cs - b.cs || a.bd - b.bd; });
   for (let i = 0; i < Math.min(P.plainTop, front.length); i++) add(front[i]);
+  /* [新增] 手动拉进：无视上面所有截断，最后补进来 */
+  BOX.forEach(function (s) { if (POOL_ADD.has(s.id)) add(s); });
   P._blockedN = blockedHit.size;
+  P._poolDelN = delHit.size;
+  P._poolAddN = pool.filter(function (s) { return POOL_ADD.has(s.id); }).length;
   return pool;
 }
 
@@ -1130,7 +1172,9 @@ root.CORE = {
   applyMask: applyMask, applyMaskFor: applyMaskFor, rebuildAllMasks: rebuildAllMasks,
   decodeCapture: decodeCapture, importCapture: importCapture, boxStamp: boxStamp,
   STATIC: STATIC,
-  setBlocked: setBlocked, isBlocked: isBlocked, BLOCKED: BLOCKED
+  setBlocked: setBlocked, isBlocked: isBlocked, BLOCKED: BLOCKED,
+  setPoolAdd: setPoolAdd, setPoolDel: setPoolDel, isPoolAdd: isPoolAdd, isPoolDel: isPoolDel,
+  POOL_ADD: POOL_ADD, POOL_DEL: POOL_DEL
 };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 </script>
@@ -1146,7 +1190,7 @@ const LSKEY = 'fgoBondCalcV1';
 let P = C.defP();
 let manual = [];
 let boxSort = 'cls';
-let boxFilter = { q: '', cls: '', onlyCr: false, onlyGd: false, onlyBlk: false };
+let boxFilter = { q: '', cls: '', onlyCr: false, onlyGd: false, onlyBlk: false, onlyPool: false, onlyOut: false };
 let blockedIds = [];   // 手动屏蔽名单（从者 id 数组），持久化在 state.blk
 
 /* ------------------------------ 小工具 ------------------------------ */
@@ -1187,7 +1231,7 @@ function ceCoverCount(c) {
 const EMBED_STAMP = C.boxStamp(D.box);
 const PKEYS = ['base', 'costMax', 'b15', 'mash', 'mash15', 'frontN', 'frontSelf', 'fce',
   'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15',
-  'fsn7', 'needCrown', 'maxCost',
+  'fsn7', 'needCrown', 'maxCost', 'poolFull',
   'crownMode', 'crownPerGroup', 'plainTop', 'topN', 'classes'];
 
 function boxRows() {
@@ -1209,7 +1253,8 @@ function restoreBox(rows) {
   });
 }
 function saveState() {
-  const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice() };
+  const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice(),
+              padd: poolAddIds.slice(), pdel: poolDelIds.slice() };
   PKEYS.forEach(function (k) { o.p[k] = P[k]; });
   o.p.en = P.en.slice();
   CE.forEach(function (c) { o.ce[c.no] = [c.r, c.f, c.cs]; });
@@ -1222,6 +1267,8 @@ function loadState() {
   if (o.p) PKEYS.forEach(function (k) { if (o.p[k] !== undefined) P[k] = o.p[k]; });
   if (o.p && Array.isArray(o.p.en) && o.p.en.length === CE.length) P.en = o.p.en.slice();
   if (Array.isArray(o.blk)) blockedIds = o.blk.map(Number).filter(function (x) { return x > 0; });
+  if (Array.isArray(o.padd)) poolAddIds = o.padd.map(Number).filter(function (x) { return x > 0; });
+  if (Array.isArray(o.pdel)) poolDelIds = o.pdel.map(Number).filter(function (x) { return x > 0; });
   if (o.ce) CE.forEach(function (c) {
     const v = o.ce[c.no];
     if (v) { c.r = v[0]; c.f = v[1]; c.cs = v[2]; }
@@ -1240,6 +1287,7 @@ function loadState() {
     }
   }
   applyBlocked();
+  applyPool();
   refreshAll();
   return notice;
 }
@@ -1258,6 +1306,7 @@ function refreshAll() {
 function resetState() {
   try { localStorage.removeItem(LSKEY); } catch (e) { }
   blockedIds = []; applyBlocked();
+  poolAddIds = []; poolDelIds = []; applyPool();
   P = C.defP();
   restoreBox(D.box.map(function (s) {
     return [s.id, s.n, s.cid, s.lv, s.bd, s.cs, s.r, s.cr, s.gd, s.lo, s.hi];
@@ -1525,17 +1574,29 @@ function doSolve() {
       return;
     }
     h += '<div class="card"><h2>候选池（' + res.pool.length + ' 骑）' +
-      '<span class="hint">穷举就是在这批人里做的 —— 池子由「必含：已戴冠/15绊/玛修」+「每个冠位组前 ' +
-      P.crownPerGroup + ' 名」+「普通从者帕累托前沿前 ' + P.plainTop + ' 名」组成' +
-      ((P.classes && P.classes.length)
-        ? '；你勾了「限定职介」，以上三段都是<b>先按职介过滤再做选取</b>' : '') +
-      ((P._blockedN)
-        ? '；已按你的<b>屏蔽名单</b>剔除 <b>' + P._blockedN + ' 骑</b>' : '') +
-      '</span></h2>' +
-      '<div>' + res.pool.map(function (s) {
-        return '<span class="pill" style="margin:2px 4px 2px 0">' + esc(s.n) + ' <span class="dim">' +
+      '<span class="hint">穷举就是在这批人里做的</span></h2>' +
+      '<div class="note" style="margin-top:0">' +
+      (P.poolFull
+        ? '<b>全量模式</b>：所有未被屏蔽的从者都进池，<b>不做任何自动截断</b>（保证不漏解）。'
+        : '池子由三段拼成：① <b>必含</b>「已戴冠 / 15绊 / 玛修」　' +
+          '② <b>每个冠位组前 ' + P.crownPerGroup + ' 名</b>（按匹配礼装数排序）　' +
+          '③ <b>普通从者帕累托前沿前 ' + P.plainTop + ' 名</b>' +
+          '（「前沿」= 不存在「更便宜且匹配礼装不更少」的替代者）' +
+          ((P.classes && P.classes.length)
+            ? '。你勾了「限定职介」，以上三段都是<b>先按职介过滤再做选取</b>' : '') + '。' +
+          '<br>⚠️ 这是<b>启发式截断</b>，实测可能漏掉更优解（限定枪阶时差 11.6%）。' +
+          '觉得不对就用下面两种办法：<b>①</b> 去「我的 BOX」页把「候选池」列改成「强制拉进/踢出」；' +
+          '<b>②</b> 打开「全量模式」（不截断）。') +
+      ((P._blockedN) ? '<br>已按你的<b>屏蔽名单</b>剔除 <b>' + P._blockedN + ' 骑</b>。' : '') +
+      ((P._poolAddN) ? '<br>已按你的<b>手动拉进</b>补入 <b>' + P._poolAddN + ' 骑</b>（无视上面三段截断）。' : '') +
+      ((P._poolDelN) ? '<br>已按你的<b>手动踢出</b>移除 <b>' + P._poolDelN + ' 骑</b>。' : '') +
+      '</div>' +
+      '<div style="margin-top:8px">' + res.pool.map(function (s) {
+        const added = C.isPoolAdd(s.id);
+        return '<span class="pill" style="margin:2px 4px 2px 0' +
+          (added ? ';background:#dcfce7;border-color:#86efac' : '') + '">' + esc(s.n) + ' <span class="dim">' +
           clsName(s.cid) + ' Lv' + s.lv + ' 绊' + s.bd + ' C' + s.cs +
-          (s.gd ? ' 冠' : '') + ' 礼装' + s.nm + '</span></span>';
+          (s.gd ? ' 冠' : '') + ' 礼装' + s.nm + (added ? ' <b>手动拉进</b>' : '') + '</span></span>';
       }).join('') + '</div></div>';
     const best = res.list[0].total;
     h += res.list.map(function (r, i) {
@@ -1694,14 +1755,51 @@ function blkByThreshold(thr) {
   return added;
 }
 
+/* [2026-10-15 新增] 候选池手动调整（三态：auto / in / out） */
+let poolAddIds = [];   // 强制拉进
+let poolDelIds = [];   // 强制踢出
+function applyPool() {
+  const have = {};
+  for (let i = 0; i < BOX.length; i++) have[BOX[i].id] = 1;
+  poolAddIds = poolAddIds.filter(function (id) { return have[id]; });
+  poolDelIds = poolDelIds.filter(function (id) { return have[id]; });
+  C.setPoolAdd(poolAddIds);
+  C.setPoolDel(poolDelIds);
+}
+function isPoolAddId(id) { return poolAddIds.indexOf(+id) >= 0; }
+function isPoolDelId(id) { return poolDelIds.indexOf(+id) >= 0; }
+/* state: 'auto' | 'in' | 'out'（in/out 互斥） */
+function setPoolState(id, state) {
+  id = +id;
+  let i = poolAddIds.indexOf(id);
+  if (i >= 0) poolAddIds.splice(i, 1);
+  i = poolDelIds.indexOf(id);
+  if (i >= 0) poolDelIds.splice(i, 1);
+  if (state === 'in') poolAddIds.push(id);
+  else if (state === 'out') poolDelIds.push(id);
+  applyPool(); saveState();
+}
+function syncPoolUI() {
+  const a = $('box-addn'), d = $('box-deln');
+  if (a) a.textContent = poolAddIds.length;
+  if (d) d.textContent = poolDelIds.length;
+  const f = $('b-poolfull');
+  if (f) f.checked = !!P.poolFull;
+}
+
 function renderBox() {
   $('box-n').textContent = BOX.length;
   const q = boxFilter.q.toLowerCase();
+  /* [2026-10-15] 先算一遍「当前自动池」的成员，供「候选池」列与筛选使用 */
+  const autoPool = C.buildPool(P);
+  const autoIds = new Set(autoPool.map(function (s) { return s.id; }));
   let lst = BOX.filter(function (s) {
     if (boxFilter.cls && String(s.cid) !== boxFilter.cls) return false;
     if (boxFilter.onlyCr && !s.cr) return false;
     if (boxFilter.onlyGd && !s.gd) return false;
     if (boxFilter.onlyBlk && !isBlkId(s.id)) return false;
+    if (boxFilter.onlyPool && !autoIds.has(s.id)) return false;
+    if (boxFilter.onlyOut && autoIds.has(s.id)) return false;
     if (q && (s.n + ' ' + clsName(s.cid)).toLowerCase().indexOf(q) < 0) return false;
     return true;
   });
@@ -1716,8 +1814,19 @@ function renderBox() {
   $('box-table').innerHTML =
     '<table><thead><tr><th>从者</th><th>职阶</th><th>等级</th><th>Cost</th>' +
     '<th style="width:90px">羁绊</th><th style="width:70px">可戴冠</th>' +
-    '<th style="width:70px">已戴冠</th><th style="width:60px">屏蔽</th><th>匹配礼装</th></tr></thead><tbody>' +
+    '<th style="width:70px">已戴冠</th><th style="width:60px">屏蔽</th>' +
+    '<th style="width:96px">候选池</th><th>匹配礼装</th></tr></thead><tbody>' +
     lst.map(function (s) {
+      const inPool = autoIds.has(s.id);
+      const isAdd = C.isPoolAdd(s.id), isDel = C.isPoolDel(s.id);
+      /* 候选池列：三态下拉 —— 自动（跟随启发式）/ 拉进 / 踢出 */
+      const sel = '<select data-p="' + s.id + '" style="width:88px' +
+        (isAdd ? ';background:#dcfce7' : (isDel ? ';background:#fee2e2' : '')) + '">' +
+        '<option value="auto"' + (!isAdd && !isDel ? ' selected' : '') + '>自动' +
+        (inPool && !isAdd && !isDel ? '（在）' : (!isAdd && !isDel ? '（外）' : '')) + '</option>' +
+        '<option value="in"' + (isAdd ? ' selected' : '') + '>强制拉进</option>' +
+        '<option value="out"' + (isDel ? ' selected' : '') + '>强制踢出</option>' +
+        '</select>';
       return '<tr' + (isBlkId(s.id) ? ' style="opacity:.5"' : '') + '><td>' + esc(s.n) + '</td><td class="dim">' + clsName(s.cid) + '</td>' +
         '<td>' + s.lv + '</td><td class="num">' + s.cs + '</td>' +
         '<td><input type="number" min="0" max="15" value="' + s.bd +
@@ -1725,6 +1834,7 @@ function renderBox() {
         '<td><input type="checkbox" ' + (s.cr ? 'checked' : '') + ' data-c="' + s.id + '"></td>' +
         '<td><input type="checkbox" ' + (s.gd ? 'checked' : '') + ' data-g="' + s.id + '"></td>' +
         '<td><input type="checkbox" ' + (isBlkId(s.id) ? 'checked' : '') + ' data-k="' + s.id + '"></td>' +
+        '<td>' + sel + '</td>' +
         '<td class="dim">' + s.nm + ' 张</td></tr>';
     }).join('') + '</tbody></table>';
   $('box-table').querySelectorAll('[data-b]').forEach(function (el) {
@@ -1737,7 +1847,7 @@ function renderBox() {
   $('box-table').querySelectorAll('[data-c]').forEach(function (el) {
     el.onchange = function () {
       const s = BOX.filter(function (x) { return x.id === +el.getAttribute('data-c'); })[0];
-      s.cr = el.checked ? 1 : 0; C.rebuildG(s); saveState();
+      s.cr = el.checked ? 1 : 0; C.rebuildG(s); saveState(); renderBox();
     };
   });
   $('box-table').querySelectorAll('[data-g]').forEach(function (el) {
@@ -1749,7 +1859,15 @@ function renderBox() {
   $('box-table').querySelectorAll('[data-k]').forEach(function (el) {
     el.onchange = function () { setBlkId(+el.getAttribute('data-k'), el.checked); renderBox(); };
   });
+  /* [2026-10-15] 候选池三态下拉 */
+  $('box-table').querySelectorAll('[data-p]').forEach(function (el) {
+    el.onchange = function () {
+      setPoolState(+el.getAttribute('data-p'), el.value);
+      saveState(); renderBox();
+    };
+  });
   syncBlkUI();
+  syncPoolUI();
 }
 
 /* ------------------------- 联网更新礼装（Mooncell） -------------------------
@@ -2163,6 +2281,29 @@ function bind() {
   $('b-onlycr').onchange = function () { boxFilter.onlyCr = $('b-onlycr').checked; renderBox(); };
   $('b-onlygd').onchange = function () { boxFilter.onlyGd = $('b-onlygd').checked; renderBox(); };
   $('b-onlyblk').onchange = function () { boxFilter.onlyBlk = $('b-onlyblk').checked; renderBox(); };
+  $('b-onlypool').onchange = function () { boxFilter.onlyPool = $('b-onlypool').checked; renderBox(); };
+  $('b-onlyout').onchange = function () { boxFilter.onlyOut = $('b-onlyout').checked; renderBox(); };
+  /* [2026-10-15] 候选池手动调整的按钮 */
+  $('b-poolfull').onchange = function () {
+    P.poolFull = $('b-poolfull').checked;
+    saveState();
+    const n = C.buildPool(P).length;
+    if (P.poolFull && C.comb5(n) > 3.5e6) {
+      alert('已开启全量模式：候选池 ' + n + ' 骑（组合 ' + Math.round(C.comb5(n)).toLocaleString() +
+        ' 种）。\n\n组合数超过 350 万，点「开始计算」会提示算不动。\n' +
+        '建议：勾选「限定职介」，或用手动「强制踢出」把池子压到 40 骑以内。');
+    }
+    renderBox();
+  };
+  $('btn-pool-clear').onclick = function () {
+    if (!poolAddIds.length && !poolDelIds.length) { alert('现在没有手动增删。'); return; }
+    if (!confirm('清空手动增删（拉进 ' + poolAddIds.length + ' 骑 / 踢出 ' + poolDelIds.length + ' 骑）？')) return;
+    poolAddIds = []; poolDelIds = []; applyPool(); saveState(); renderBox();
+  };
+  $('btn-pool-recalc').onclick = function () {
+    switchTab('solve');
+    doSolve();
+  };
   $('btn-blk-clear').onclick = function () {
     if (!blockedIds.length) { alert('屏蔽名单现在是空的。'); return; }
     if (!confirm('清空屏蔽名单？（被屏蔽的 ' + blockedIds.length + ' 骑将重新进入候选池）')) return;
@@ -2872,6 +3013,7 @@ function bindFarm() {
 const bootNotice = loadState();
 syncIn();
 applyBlocked();
+applyPool();
 fillClsSelect();
 bind();
 bindFarm();
