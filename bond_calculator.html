@@ -125,6 +125,8 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <label class="chk"><input type="checkbox" id="p-noMash"> 玛修不上场（换普通从者）</label>
         <label class="chk"><input type="checkbox" id="p-mcrown"> 给玛修戴冠（占一个 EX 名额，需撤下 1 个 EX 冠位）</label>
         <label class="chk"><input type="checkbox" id="p-m15"> 玛修已刷到 15 绊（她自己就吃不到羁绊了）</label>
+        <label class="chk"><input type="checkbox" id="p-needCrown" checked> <b>冠位从者至少上场一位</b>（可戴冠者即算；冠位战/刷冠位羁绊用）</label>
+        <label class="chk"><input type="checkbox" id="p-maxCost" checked> <b>尽量用满 Cost</b>（总分相同时优先选 Cost 用得更满的，不牺牲羁绊收益）</label>
         <div class="note" style="margin-top:0">手动屏蔽名单：<b id="p-blkn">0</b> 骑 —— 在「我的 BOX」页每行的「屏蔽」列勾选，被屏蔽的从者不进候选池（手动配队页不受影响）。<button class="mini gray" id="btn-blk-manage" style="margin-left:8px">去设置屏蔽名单</button></div>
       </div>
       <div style="margin-top:14px">
@@ -253,9 +255,10 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <div><label class="f">玛修满绊后合计 %</label><input type="number" id="p-mash15" value="45"></div>
         <div><label class="f">前排位置数</label><input type="number" id="p-frontN" value="3"></div>
         <div><label class="f">前排独立乘区 %</label><input type="number" id="p-frontSelf" value="20"></div>
-        <div><label class="f">助战礼装张数</label>
+        <div><label class="f">好友冠位礼装框数</label>
           <select id="p-fce"><option value="0">0 张</option><option value="1">1 张</option>
-          <option value="2" selected>2 张</option></select></div>
+          <option value="2" selected>2 张（1 常规助战 + 1 冠位额外）</option>
+          <option value="3">3 张</option></select></div>
         <div><label class="f">冠位额外礼装框</label>
           <select id="p-freeCrown">
             <option value="one" selected>仅 1 个冠位（实际）</option>
@@ -571,6 +574,12 @@ function defP() {
     fsn7: false,
     crownMode: 'any',
     crownPerGroup: 3, plainTop: 22, topN: 8,
+    /* [2026-10-15 新增] 用户三个需求：
+       needCrown    = 队里至少要有 1 名「可戴冠(cr)」从者（规划视角：打算练到条件就算）
+       maxCost      = 总分相同时，优先选「Cost 用得更满」的那队（不牺牲任何羁绊收益）
+       fce          = 好友冠位的礼装框数（1 常规助战框 + 1 冠位额外框 = 2 张） */
+    needCrown: true,
+    maxCost: true,
     en: CE.map(function () { return 1; })
   };
   return applyFsn(P);
@@ -794,6 +803,7 @@ const _ownIdx = new Int32Array(8);
 const _frontFlag = new Uint8Array(8);
 const _rateBuf = new Float64Array(NCE);
 const _touched = new Int32Array(NCE + 4);
+let _lastCost = 0;   // [2026-10-15] evalTeam 顺带带出的「总 Cost」，供 solve 做 tie-break
 
 function evalTeam(team, P, quick) {
   if (P._enKey === undefined) P._enKey = P.en.join('');
@@ -876,6 +886,9 @@ function evalTeam(team, P, quick) {
   const mashFull = mashS ? !!(P.m15 || (P.all15 && mashS.gd)) : false;
   const M = 1 + (P.b15 / 100) * n15 + (mashS && P.mashBond ? (mashFull ? P.mash15 : P.mash) / 100 : 0);
   const total = P.base * M * sigma;
+  /* [2026-10-15] quick 路径顺带把「从者费 + 礼装实付费」存到模块级变量，
+     供 solve() 做「同分优先用满 Cost」的 tie-break，避免重复跑一遍分配。 */
+  _lastCost = svtCost + al.cost;
   if (quick) return total;
 
   const recv = [], self10 = [], front = new Set();
@@ -1011,11 +1024,14 @@ function solve(P) {
 
   _allocStats.calls = 0; _allocStats.combos = 0; _allocStats.dp = 0;
   const totals = new Float64Array(cap);
+  const costs = new Float64Array(cap);          // [新增] 每队的「总 Cost」（从者+礼装），用于同分 tie-break
   const combos = new Int32Array(cap * 5);
   let cnt = 0;
   const c = [0, 1, 2, 3, 4];
   const team = [null, null, null, null, null];
   const needMash = P.mashIn || P.noMash;
+  const needCrown = !!P.needCrown;              // [新增] 至少 1 名可戴冠者
+  let droppedNoCrown = 0;                       // 被冠位约束剔除的组合数（用于界面提示）
   for (;;) {
     for (let i = 0; i < 5; i++) team[i] = pool[c[i]];
     let ok = true;
@@ -1024,6 +1040,13 @@ function solve(P) {
       for (let i = 0; i < 5; i++) if (isMash(team[i])) { has = true; break; }
       if (P.mashIn && !has) ok = false;
       if (P.noMash && has) ok = false;
+    }
+    /* [新增] 冠位约束：队内至少 1 人可戴冠（cr=1，即 Lv100+三技能310）。
+       口径经用户 2026-10-15 确认：规划视角，不要求账号上已戴冠(gd)。 */
+    if (ok && needCrown) {
+      let hasCr = false;
+      for (let i = 0; i < 5; i++) if (team[i].cr) { hasCr = true; break; }
+      if (!hasCr) { ok = false; droppedNoCrown++; }
     }
     if (ok) {
       const t = evalTeam(team, P, true);            // 只要一个数字：零对象分配
@@ -1036,6 +1059,9 @@ function solve(P) {
         }
         if (ok) {
           totals[cnt] = t;
+          /* 总 Cost（从者费 + 礼装实付费）由 evalTeam 在 quick 路径里顺带带出
+             （_lastCost），避免为了 tie-break 再跑一遍礼装分配、把性能砍半。 */
+          costs[cnt] = _lastCost;
           const o = cnt * 5;
           combos[o] = c[0]; combos[o + 1] = c[1]; combos[o + 2] = c[2];
           combos[o + 3] = c[3]; combos[o + 4] = c[4];
@@ -1051,10 +1077,21 @@ function solve(P) {
   }
   out.scanned = cnt;
   out.feasible = cnt;
+  out.droppedNoCrown = droppedNoCrown;
 
   const order = new Int32Array(cnt);
   for (let i = 0; i < cnt; i++) order[i] = i;
-  order.sort(function (a, b) { return totals[b] - totals[a]; });
+  /* [新增] 排序：先按 total 降序；总分相同（差 < 1e-6）时，按总 Cost 降序 ——
+     即「尽量用满 Cost」作为 tie-breaker，不牺牲任何羁绊收益。 */
+  if (P.maxCost) {
+    order.sort(function (a, b) {
+      const d = totals[b] - totals[a];
+      if (Math.abs(d) > 1e-6) return d;
+      return costs[b] - costs[a];
+    });
+  } else {
+    order.sort(function (a, b) { return totals[b] - totals[a]; });
+  }
 
   const K = Math.min(P.topN | 0, cnt);
   for (let i = 0; i < K; i++) {
@@ -1150,7 +1187,7 @@ function ceCoverCount(c) {
 const EMBED_STAMP = C.boxStamp(D.box);
 const PKEYS = ['base', 'costMax', 'b15', 'mash', 'mash15', 'frontN', 'frontSelf', 'fce',
   'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15',
-  'fsn7',
+  'fsn7', 'needCrown', 'maxCost',
   'crownMode', 'crownPerGroup', 'plainTop', 'topN', 'classes'];
 
 function boxRows() {
@@ -1287,6 +1324,8 @@ function syncIn() {
   $('p-noBat').checked = !!P.noBat; $('p-forceBat').checked = !!P.forceBat;
   $('p-noMash').checked = !!P.noMash; $('p-mcrown').checked = !!P.mcrown;
   $('p-m15').checked = !!P.m15;
+  $('p-needCrown').checked = !!P.needCrown;
+  $('p-maxCost').checked = !!P.maxCost;
   $('p-base').value = P.base; $('p-costMax').value = P.costMax; $('p-b15').value = P.b15;
   $('p-mash').value = P.mash; $('p-mash15').value = P.mash15;
   $('p-frontN').value = P.frontN; $('p-frontSelf').value = P.frontSelf;
@@ -1304,6 +1343,8 @@ function readIn() {
   P.noBat = $('p-noBat').checked; P.forceBat = $('p-forceBat').checked;
   P.noMash = $('p-noMash').checked; P.mcrown = $('p-mcrown').checked;
   P.m15 = $('p-m15').checked;
+  P.needCrown = $('p-needCrown').checked;
+  P.maxCost = $('p-maxCost').checked;
   P.base = +$('p-base').value || 0; P.costMax = +$('p-costMax').value || 0;
   P.b15 = +$('p-b15').value || 0; P.mash = +$('p-mash').value || 0;
   P.mash15 = +$('p-mash15').value || 0;
@@ -1468,8 +1509,20 @@ function doSolve() {
       return;
     }
     if (!res.list.length) {
-      h = '<div class="warn">没有满足条件的编成。检查一下 Cost 上限，或者取消「满绊者一律不上场／手动屏蔽名单／玛修必须上场」之类的硬约束。</div>';
-      out.innerHTML = h; btn.disabled = false; return;
+      const noCrown = P.needCrown && (res.droppedNoCrown || 0) > 0;
+      h = '<div class="warn">没有满足条件的编成。' +
+        (noCrown
+          ? '<br><b>你勾了「冠位从者至少上场一位」，而候选池里没有任何「可戴冠」从者</b> —— ' +
+            '要么取消这个约束，要么去「我的 BOX」页把打算戴冠的从者勾上「可戴冠」' +
+            '（条件：Lv100 + 三技能 310），或把「每个冠位组保留」调大。<br>' +
+            '<div style="margin-top:8px"><button class="mini" id="fix-needcrown-off">' +
+            '取消「冠位至少一位」，重算</button></div>'
+          : '检查一下 Cost 上限，或者取消「满绊者一律不上场／手动屏蔽名单／玛修必须上场」之类的硬约束。') +
+        '</div>';
+      out.innerHTML = h; btn.disabled = false;
+      const bNc = $('fix-needcrown-off');
+      if (bNc) bNc.onclick = function () { $('p-needCrown').checked = false; doSolve(); };
+      return;
     }
     h += '<div class="card"><h2>候选池（' + res.pool.length + ' 骑）' +
       '<span class="hint">穷举就是在这批人里做的 —— 池子由「必含：已戴冠/15绊/玛修」+「每个冠位组前 ' +
@@ -2030,6 +2083,20 @@ function renderHelp() {
       '也不进礼装的「覆盖人数」。<b>但助战身上的礼装框仍然生效</b>：' +
       '午茶/午餐的「助战 15%/10%」是加给<b>我方 5 人</b>的，这部分照算（见「助战礼装」一行）。<br>' +
       '修正前它被当成第 6 个受益人，白送了约 <b>2.5</b> 的 Σ（约占那队 total 的 17%）。') +
+    row('冠位从者至少上场一位（2026-10-15 新增）',
+      '勾上后，自动最优<b>只保留队内至少有 1 名「可戴冠」从者</b>的组合。' +
+      '口径经你确认：<b>可戴冠(cr) 即算</b>，不要求账号上已经真的戴冠(gd) —— ' +
+      '因为这是「打算练到 Lv100 + 三技能 310」的规划视角。<br>' +
+      '当前 BOX 可戴冠 16 人。开启后可行组合 73,815 → <b>66,500</b>（剔除 7,315 个无冠位组合）。' +
+      '若候选池里一个可戴冠者都没有，会直接提示并给一键取消按钮。') +
+    row('尽量用满 Cost（2026-10-15 新增）',
+      '作为<b>同分 tie-breaker</b>：先按总羁绊收益降序，<b>总分相同</b>（差 < 1e-6）时，' +
+      '再按「从者费 + 礼装实付费」降序 —— 即同样收益下优先展示 Cost 用得更满的那队。' +
+      '<b>不会牺牲任何羁绊收益</b>（已用 19 组同分异 Cost 的方案验证：开启后组内 Cost 严格降序，关闭时 17 组乱序）。') +
+    row('好友冠位礼装框数（2026-10-15 明确）',
+      '默认 <b>2 张</b> = 1 个常规助战框 + 1 个好友冠位的额外框。' +
+      '这两张用「助战%」(f10) 计价、不占我方 Cost，且可与自用礼装重复。' +
+      '助战礼装按价值取前 fce 张。当前默认下最优解会用「检查报告 + 献给幸福的新娘」。') +
     row('在职阶名上修了一个 bug',
       'WorkBuddy 旧版把 classId 23 标成「裁」、25 标成「月」、28 标成「外」。' +
       '按数据集核对：<b>23 = MoonCancer(月)</b>、<b>25 = Foreigner(降)</b>、<b>28 = Pretender(伪)</b>。' +
