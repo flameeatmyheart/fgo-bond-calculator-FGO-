@@ -304,11 +304,13 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
  * ---------------------------------------------------------------------------
  * 一轮总进量 = BASE × M × Σ_{会获得羁绊的人}[ (1 + 自身礼装加成%) × 站位系数 ]
  *   M = 1 + 0.25×队内15绊人数(玛修除外) + 玛修加成(0.20 / 满绊 0.45)
- *   Σ 里的人 = 己方未满绊者 + 助战（满绊者自身 0 收益，但他的礼装框还在）
+ *   Σ 里的人 = 己方未满绊者（满绊者自身 0 收益，但他的礼装框还在）
+ *              —— 助战从者「本人」不算：它涨的是好友账号上的羁绊（2026-10-15 修）
  * 礼装：作用于「全队中符合条件的成员」
  *       （技能原文：クエストクリア時に得られる〔ケモノ科のサーヴァント〕の絆を20%増やす）
  *       框数 = 己方 5 个占费框 + 每名冠位 1 个免费框；同一编号不可重复
- * 助战：好友冠位 = 1 免费 + 1 常规框，不计我方 Cost，自己吃羁绊，可与自用重复
+ * 助战：好友冠位 = 1 免费 + 1 常规框，不计我方 Cost，可与自用重复。
+ *       助战身上那张礼装加给「我方 5 人」（午茶助战 15%），但助战本人不获得羁绊。
  * 冠位：7 正职阶各 1 + EX 2 个（不可同职阶）
  *
  * 性能：热点路径零对象分配（复用 TypedArray 缓冲）。
@@ -383,9 +385,8 @@ function rebuildG(s) {
 }
 BOX.forEach(function (s) { rebuildBits(s); rebuildG(s); });
 
-const ALL_BL = [];
-for (let c = 0; c < NCE; c++) ALL_BL.push(c);
-const FRIEND = { id: -1, n: '助战（好友冠位）', cid: 0, lv: 120, bd: 0, cs: 0, g: '', gd: 0 };
+/* [2026-10-15] 原来这里还有 ALL_BL / FRIEND 两个常量，用于把助战当成第 6 个受益人。
+   助战本人不计入羁绊后它们已无用，删除以免误导（助战礼装走 frPick，与它们无关）。 */
 
 /* ============================================================================
  * 导入新抓包：在浏览器里自己把 .php / 已解码的 JSON 变成新的 BOX
@@ -815,20 +816,21 @@ function evalTeam(team, P, quick) {
     const bl = s.bl;
     for (let j = 0; j < bl.length; j++) { const c = bl[j]; if (en[c]) _cover[c]++; }
   }
-  if (fce > 0) {
-    _recvS[nrecv] = FRIEND; _recvBl[nrecv] = ALL_BL; _recvOwn[nrecv] = 0; nrecv++;
-    for (let c = 0; c < NCE; c++) if (en[c]) _cover[c]++;
-  }
+  /* [2026-10-15 修] 助战从者「自己」不获得羁绊 —— 它涨的是好友账号上那只的羁绊，
+     不可能记到你头上。所以助战不进接收者列表、也不进 _cover（覆盖人数）。
+     但助战身上那张礼装的框仍然生效（午茶/午餐的「助战 15%/10%」是给我方全队的），
+     这部分由下面的 frPick 处理，作用对象是我方这 5 人。 */
 
   const nf = P.freeCrown === 'all' ? crowns.length : Math.min(crowns.length, 1);
   const np = team.length;
   const budget = P.costMax - svtCost;
   const fOwn = 1 + P.frontSelf / 100;
-  const ownCount = nrecv - (fce > 0 ? 1 : 0);
+  /* nrecv 现在只含我方未满绊者（助战已移除），所以 ownCount = nrecv，
+     也不再需要「减去助战那 1 个覆盖」的 minus 修正。 */
+  const ownCount = nrecv;
   const useIter = hasFront && ownCount > fnMax;
   if (!useIter && hasFront && ownCount > 0) {
-    const minus = fce > 0 ? 1 : 0;
-    for (let c = 0; c < NCE; c++) _coverFront[c] = _cover[c] - minus;
+    for (let c = 0; c < NCE; c++) _coverFront[c] = _cover[c];
   }
 
   let al = null, frPickF = null;
@@ -1087,7 +1089,7 @@ root.CORE = {
   defP: defP, applyFsn: applyFsn, evalTeam: evalTeam, evalManual: evalManual, solve: solve,
   buildPool: buildPool, crownPlan: crownPlan, crownGroupOf: crownGroupOf,
   bdEff: bdEff, isMash: isMash, allocCE: allocCE, rebuildBits: rebuildBits,
-  rebuildG: rebuildG, comb5: comb5, FRIEND: FRIEND, allocStats: _allocStats,
+  rebuildG: rebuildG, comb5: comb5, allocStats: _allocStats,
   applyMask: applyMask, applyMaskFor: applyMaskFor, rebuildAllMasks: rebuildAllMasks,
   decodeCapture: decodeCapture, importCapture: importCapture, boxStamp: boxStamp,
   STATIC: STATIC,
@@ -1335,12 +1337,13 @@ function renderResult(r, rank) {
       '</td><td class="num">' + s.cs + '</td><td>' + cell + '</td></tr>';
   }).join('');
 
+  /* [2026-10-15 修] 助战从者自身不计入收益（它涨的是好友账号上的羁绊）。
+     这里只列出「助战身上的礼装给我方 5 人带来的加成」，不再给助战本人算一行羁绊。 */
   let friendRow = '';
   if (r.fce > 0) {
-    const ri = r.recv.length - 1;
     friendRow = '<tr class="frrow"><td>助战（好友冠位）</td><td class="dim">助</td><td>Lv120</td>' +
-      '<td class="dim">&lt;15</td><td class="num">0</td><td><b class="up">+' +
-      pct(r.self10[ri]) + '%</b> <span class="dim">后排 ×1.00</span></td></tr>';
+      '<td class="dim">&lt;15</td><td class="num">0</td>' +
+      '<td><span class="dim">不计入（羁绊归好友账号）</span></td></tr>';
   }
 
   const mine = r.pick.map(function (p) {
@@ -2021,8 +2024,12 @@ function renderHelp() {
       '冠位条件 Lv100 + 三技能 310，当前满足的有 ' + BOX.filter(function (s) { return s.cr; }).length +
       ' 人，账号上已戴冠 ' + gr.length + ' 人：' + gr.map(function (s) { return esc(s.n); }).join('、') + '。') +
     row('前排 3 人独立乘区 ×1.2',
-      '你 21:30 的口述。程序自动把「吃加成最多的 3 个未满绊者」放前排；' +
-      '助战不占前排位、也不参与分摊。') +
+      '你 21:30 的口述。程序自动把「吃加成最多的 3 个未满绊者」放前排。') +
+    row('助战<b>本人不计入</b>收益（2026-10-15 修）',
+      '助战从者涨的是<b>好友账号</b>上那只的羁绊，不可能记到你头上 —— 所以它不进接收者名单、' +
+      '也不进礼装的「覆盖人数」。<b>但助战身上的礼装框仍然生效</b>：' +
+      '午茶/午餐的「助战 15%/10%」是加给<b>我方 5 人</b>的，这部分照算（见「助战礼装」一行）。<br>' +
+      '修正前它被当成第 6 个受益人，白送了约 <b>2.5</b> 的 Σ（约占那队 total 的 17%）。') +
     row('在职阶名上修了一个 bug',
       'WorkBuddy 旧版把 classId 23 标成「裁」、25 标成「月」、28 标成「外」。' +
       '按数据集核对：<b>23 = MoonCancer(月)</b>、<b>25 = Foreigner(降)</b>、<b>28 = Pretender(伪)</b>。' +
