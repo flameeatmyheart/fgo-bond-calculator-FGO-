@@ -404,18 +404,31 @@ const STATIC = new Map();
   }
 })();
 
-/* 礼装表被「联网更新」扩过 → 从者的「可装备礼装位图」必须整体重算。
-   内嵌 BOX 只存了位图、没有特质数组，特质按 svtId 从静态表取。 */
-if (CE_EXTRA_N > 0) {
+/* ---- 礼装位图：永远由 (从者特质, 当前礼装表) 现场推导，绝不沿用内嵌/存档里的旧位图 ----
+   [2026-10-14 修] 内嵌 BOX 的 lo/hi 是按「46 张」旧礼装表算出来的，而 D.ce 已经是 49 张
+   —— 记忆的大图书馆(2583) / 流转的剑圣(2607) / 军火经销商(2701) 插在索引 9~11，
+   于是索引 >= 9 的语义整体右移 3 位，造成三个可复现的错误：
+     · 午餐(索引 12) 被当成旧表索引 12 =「英灵逢魔：枪之骑士」(FSN 限定) → 覆盖 0 人；
+     · 英灵逢魔(索引 13~19) 被当成旧表索引 17/18/19 =「午茶/芙尔摩斯/晚餐」(无条件) → 人人命中；
+     · 索引 46~48 三张新礼装没有任何位 → 永远不生效。
+   所以这里必须「无条件」重算，而不是只在联网加过礼装时才重算。 */
+function applyMaskFor(s) {
+  const r = STATIC.get(String(s.id));
+  s.tr = (r && r.t) || [];
+  applyMask(s);
+}
+function rebuildAllMasks() {
   let missTr = 0;
   BOX.forEach(function (s) {
     const r = STATIC.get(String(s.id));
-    if (!r || !r.t) { missTr++; return; }   // 找不到就保留原位图，至少不会算错旧的
-    s.tr = r.t;
-    applyMask(s);
-    delete s.tr;
+    if (!r || !r.t || !r.t.length) missTr++;   // 取不到特质 → 按「无特质」处理，只吃无条件礼装
+    applyMaskFor(s);
   });
-  if (missTr) console.warn('[联网更新] ' + missTr + ' 骑在静态表里取不到特质，位图保持原样');
+  return missTr;
+}
+const MISS_TRAIT = rebuildAllMasks();
+if (MISS_TRAIT) {
+  console.warn('[礼装位图] ' + MISS_TRAIT + ' 骑在静态表里取不到特质，已按「无特质」处理（只吃无条件礼装）');
 }
 
 function ceMatchCt(ce, tset, cid) {
@@ -1075,6 +1088,7 @@ root.CORE = {
   buildPool: buildPool, crownPlan: crownPlan, crownGroupOf: crownGroupOf,
   bdEff: bdEff, isMash: isMash, allocCE: allocCE, rebuildBits: rebuildBits,
   rebuildG: rebuildG, comb5: comb5, FRIEND: FRIEND, allocStats: _allocStats,
+  applyMask: applyMask, applyMaskFor: applyMaskFor, rebuildAllMasks: rebuildAllMasks,
   decodeCapture: decodeCapture, importCapture: importCapture, boxStamp: boxStamp,
   STATIC: STATIC,
   setBlocked: setBlocked, isBlocked: isBlocked, BLOCKED: BLOCKED
@@ -1149,7 +1163,9 @@ function restoreBox(rows) {
       id: r[0], n: r[1], cid: r[2], lv: r[3], bd: r[4], cs: r[5],
       r: r[6], cr: r[7], gd: r[8], lo: r[9], hi: r[10]
     };
-    C.rebuildBits(s); C.rebuildG(s);
+    /* [2026-10-14] 存档里的 lo/hi 是按「生成存档时那份礼装表」算的，礼装表一变就全错位
+       → 一律丢弃，用当前礼装表重算（C.applyMaskFor 内部就是干这个的）。 */
+    C.applyMaskFor(s);
     BOX.push(s);
   });
 }
@@ -2015,6 +2031,19 @@ function renderHelp() {
       '从 20 张一路扩到 46 张（补回 3 张 +5%、3 张 +2.5%、21 张 +2% 的常驻礼装），' +
       '2026-10-07 又补进 3 张日服先行、满破 +20% 的（记忆的大图书馆 / 流転の剣聖 / ガン・ディーラー）→ 49 张。' +
       '这 3 张可用「礼装」页的<b>联网更新（Mooncell）</b>按钮随时重抓；策略是只新增本地缺的、不改已有数据。') +
+    row('礼装位图每次都按当前礼装表重算（2026-10-14 修大错）',
+      '内嵌 BOX 里的「这个从者能吃哪几张礼装」位图，原先只在「联网加过礼装」时才重算，' +
+      '结果它是按<b>旧的 46 张表</b>算的、而礼装池已经是 49 张 —— 新加的 3 张插在索引 9~11，' +
+      '索引 ≥9 的含义整体<b>右移 3 位</b>。后果：<br>' +
+      '· 午餐（索引 12）被当成「英灵逢魔：枪之骑士」（FSN 限定）→ 覆盖 <b>0 人</b>；<br>' +
+      '· 英灵逢魔（索引 13~19）被当成「午茶 / 芙尔摩斯 / 晚餐」（无条件）→ <b>人人命中</b>；<br>' +
+      '· 索引 46~48 的三张新礼装没有任何位 → <b>永远不生效</b>。<br>' +
+      '现在改为<b>无条件</b>用静态特质表现场重算，存档里的旧位图也一律丢弃 —— ' +
+      '无论礼装池怎么扩，判定范围都不会再错位。') +
+    row('自用位永远轮不到「午茶」',
+      '午茶自用只有 <b>5%</b>，午餐自用 <b>10%</b> —— 同 Cost 12、同样无条件覆盖，午餐是午茶的严格上位。' +
+      '所以「我方礼装」里只会出现午餐；午茶只在<b>助战位</b>有优势（15% > 午餐的 10%）。' +
+      '修好位图错位后这个关系自动成立，不需要额外特判。') +
     row('屏蔽名单是<b>手动</b>的，不是自动判断',
       '羁绊上限受<b>梦火</b>影响 —— 未戴冠的从者也能被喂到 15 绊，程序无法可靠推断谁「已满」。' +
       '所以「我的 BOX」页加了一列<b>屏蔽</b>：你自己点名，被点名的从者不进自动最优候选池。') +
