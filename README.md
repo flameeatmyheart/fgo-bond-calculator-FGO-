@@ -5,8 +5,15 @@ for maximizing bond-point gain per round in *Fate/Grand Order* (国服 / CN serv
 毕竟是个vibe coding的产物，但后续应该会更新和维护的（根本没人会看到这东西吧？）
 简述:该程序的作用就是在已知你的BOX的前提下（这需要抓包的配合）自动计算出羁绊最大化的队伍（怎么过图先别管，先贪再说）
 目前的使用环境是今年年底的空想树战，所以所有冠位都算了额外礼装框，后面跟进会去掉
+> 📌 **2026-10-15 更正**：上面这句已不适用于当前代码。现在的默认值是
+> **「仅 1 个冠位给免费框」**（机制参数页的「冠位额外礼装框」= `仅 1 个冠位（实际）`）；
+> 想让每个冠位都给，把该项改成 `每个冠位都给` 即可。
 预计后面可能会出现的功能：限定职介的组队（方便冠位战） 优化冠位从者的计算 给出特定羁绊值的刷法（114514和1314520)
 > 中文完整技术文档与验证记录见 [DELIVERY.md](./DELIVERY.md)。
+
+> ⚠️ **2026-10-15 重要修正**：早期版本有两个会给出**错误结论**的 bug，已修复并推送。
+> 如果你在 2026-10-15 之前克隆过本仓库，请务必 `git pull`。
+> 详见下方 [Fixed bugs](#fixed-bugs-2026-10-15)。
 
 ## What it does
 
@@ -23,7 +30,7 @@ Six tabs:
 
 1. **自动最优 (Auto Optimal)** — exhaustive search over the candidate pool, top-N teams with per-servant bonus breakdown.
 2. **手动配队 (Manual)** — pick 5 servants, see the live breakdown.
-3. **我的 BOX (My Box)** — 275 servants, edit bond / crown state; a per-servant **屏蔽 (exclude)** column; import a new packet capture.
+3. **我的 BOX (My Box)** — 275 servants, edit bond / crown state; per-servant **屏蔽 (exclude)** and **候选池 (candidate-pool)** columns; import a new packet capture.
 4. **礼装 (Craft Essences)** — 49 essences, toggle and tune self / support / Cost; one-click refresh from Mooncell.
 5. **机制参数 (Parameters)** — base bond, Cost cap, 15-bond / Mashu / front-row bonuses.
 6. **说明与依据 (Sources)** — data provenance for every rule.
@@ -55,6 +62,77 @@ bond ≥ N in one click.
   applied, so they do not silently eat one of the N candidate slots.
 - The list is saved with the rest of your state (and in the JSON export), and is
   pruned automatically when you import a new box.
+
+## Candidate pool (候选池) — and why it is adjustable
+
+The exhaustive search cannot run over all 275 servants (that is ~12.6 **billion**
+5-servant combinations), so the app first builds a **candidate pool** by a
+three-part heuristic:
+
+1. **Must-include** — already-crowned / bond-15 / Mashu.
+2. **Top N per crown group** (default 3), ranked by matched-essence count.
+3. **Top N of the Pareto front** among ordinary servants (default 22), where
+   "front" means *no other servant is both cheaper and covers at least as many
+   essences*.
+
+**This heuristic can miss the true optimum.** Measured against full enumeration
+within a single class:
+
+| Class | pool / total | pool best | full best | gap |
+|---|---|---|---|---|
+| Lancer | 14/34 | 58,056 | 64,797 | **−11.61%** |
+| Rider | 8/30 | 62,623 | 66,537 | −6.25% |
+| Caster | 11/36 | 62,840 | 64,362 | −2.42% |
+| Assassin | 12/29 | 66,754 | 68,059 | −1.95% |
+| Archer | 13/26 | 58,274 | 59,361 | −1.87% |
+| Saber | 12/35 | 64,362 | 65,232 | −1.35% |
+| Avenger | 7/11 | 56,969 | 57,578 | −1.07% |
+| Berserker | 13/35 | 60,666 | 61,101 | −0.72% |
+
+8 of 11 classes were affected. So the pool is **fully adjustable**:
+
+- **候选池 column** in the **我的 BOX** tab — a three-state dropdown per servant:
+  *自动 (auto)* / *强制拉进 (force-in)* / *强制踢出 (force-out)*.
+  Force-in bypasses every automatic cut-off; force-out is like excluding, but
+  scoped to "not this time" rather than a permanent block.
+- **全量模式 (full mode)** — skip the heuristic entirely and put every
+  non-excluded servant in the pool. Guarantees no missed optimum. Only usable
+  when the resulting combination count is manageable (e.g. a single class), and
+  the built-in guard refuses to run past 3.5 M combinations instead of hanging
+  the browser.
+- Precedence: **class filter > exclusion list > force-out > auto heuristic > force-in**.
+- Both lists persist with your saved state and are pruned on a new box import.
+
+## Fixed bugs (2026-10-15)
+
+Two bugs in earlier revisions produced **wrong answers**, not crashes:
+
+1. **Essence applicability was entirely misaligned.** Each servant's
+   "which essences apply" bitmask had been generated against an older **46-essence**
+   table, while the pool had grown to **49** — three essences were *inserted* at
+   indices 9–11, shifting every index ≥ 9 by three. Consequences: 迦勒底午餐时光
+   (lunch) was read as an FSN-only essence and matched **0 servants**; the seven
+   英灵逢魔 essences were read as unconditional ones and matched **all 275**; and
+   the three newest essences could never activate. Now the bitmask is always
+   recomputed from the servant trait table and the current essence table
+   (13,475 bits audited: 275/275 rows wrong → **0 wrong**).
+2. **The support servant was counted as a bond recipient.** A friend support
+   gains bond on *their* account, not yours — so it must not appear in your
+   total. It had been added as a sixth beneficiary (and inflated every essence's
+   coverage count by one). The **essence on the support still applies** to your
+   five servants, which is a separate, genuine effect and is retained.
+
+## Features added (2026-10-15)
+
+- **冠位从者至少上场一位 (at least one crowned servant)** — hard constraint in
+  the solver. "Crownable" (Lv100 + 3× skill 10) counts; you need not have crowned
+  them in-game yet.
+- **尽量用满 Cost (use as much Cost as possible)** — a *tie-breaker*, not a
+  sacrifice: among teams with equal bond gain, the one using more Cost is shown
+  first. Verified over 19 equal-score groups (strictly descending Cost when on;
+  17/20 groups unordered when off).
+- **好友冠位礼装框数 (friend crown essence frames)** — default **2**
+  (1 regular support frame + 1 crown bonus frame).
 
 ## Craft-essence data (礼装数据)
 
