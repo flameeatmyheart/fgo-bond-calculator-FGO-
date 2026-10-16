@@ -352,3 +352,57 @@ python update_box.py <fgo_box.json>     # 计算器「导出 box.json」出来�
 
 **待用户手动 push 的提交现在是 7 个**：`d5dc389` `c4fb263` `47c9a13` `d2f73b1` `ab4f8c4` `f7ed6b5` + 本次。
 
+---
+
+## 十二、2026-10-15 无重复模式（新功能）
+
+**需求（用户原话）**：「加入一个新的计算模式：无重复模式，除了被标记的少数从者，大多数从者只允许在配队中出现一次」。
+即：一次产出 **K 支队伍**，绝大多数从者在这 K 队里**最多出现一次**；少数用户标「重复豁免」的从者可每队都上。
+用途是「轮替刷同一张本」——同一从者不被重复占用。
+
+### 设计取舍（先对齐后做）
+- **方向 = 多队互相不重叠**（不是「单队内不重复」，单队本来就不能有同名从者）。
+- **算法 = 贪心逐队**：每轮 `solve()` 取当前候选池 top1 队 → 把该队里**非豁免**的从者 id 累加进
+  `P._exclude` → 下一轮 `buildPool` 把这些已用者移出候选池 → 再算下一队。
+  枚举量逐轮缩小（Σ C(n−5k, 5) ≪ 一次枚举全部 + 后处理挑不重复），在 275 骑整池上也只要 ~1.8 s。
+- **K 由用户手动输入**（默认 3，范围 1–20）；**不**在结果页做逐队微调（走 K 队即可）。
+- 已和用户确认**接受贪心近似**（非全局最优 K 队集合）：每轮局部最优，第 K 队可能略差于全局协调方案；
+  对「轮替刷本」够用。结果页会明确写「贪心近似」的说明。
+
+### 改动
+1. **内核**：新增 `solveMulti(P)`（CORE 导出 `solveMulti`）。循环 k=0..K-1，每轮 `P._exclude = used` 后
+   `solve(P)`，取 `res.list[0]`，把队中非豁免从者 id 加进 `used`；返回
+   `{ multi:true, cap, pool, feasible, tooBig, teams, list:teams }`（`list` 同时挂 `teams`，
+   让界面层 `renderResult` / `bindResultButtons` 沿用单队渲染路径即可）。
+2. **重复豁免集合**：内核 `const EXEMPT = new Set()` + `setExempt / isExempt`，导出到 `CORE`
+   （与 `BLOCKED` 同层）。`buildPool` 的 `add()` 在剔除已用者时加条件
+   `if (P._exclude.has(s.id) && !isExempt(s.id) && !isMash(s)) return;`。
+   **玛修永远视为豁免**——因为她默认每队必上，否则第一轮后会被 `_exclude` 踢掉、后续队缺人。
+3. **UI（自动最优 tab）**：新增勾选框「**无重复模式**（输出 `<input number dupK>` 支互不重复的队伍…）」。
+   `readIn` 读 `noDup` / `dupK`；`doSolve` 改为 `res = P.noDup ? C.solveMulti(P) : C.solve(P)`，
+   无重复时额外渲染一段「贪心近似、非全局最优」的提示。
+4. **UI（我的 BOX tab）**：表格新增「**重复豁免**」列（`data-e` 复选框）；勾选即 `setExemptId`，
+   半透明样式与屏蔽列一致。
+5. **持久化**：`exemptIds` 随状态存 `state.exm`；导入/导出 JSON 带 `exm`；拖新抓包时按当前 BOX 过滤失效 id；
+   「恢复原始数据」清空豁免名单。
+
+### 验证（无头 Chrome CDP 探针，零 JS 报错）
+- 探针脚本：`_smoke_cdp.js`（内核层，调 `CORE.solveMulti`）+ `_smoke_ui.js`（UI 层，勾选开关→点开始计算→轮询 `#solve-out` 渲染）。
+- 内核：`hasCORE=true`、`multi=true`、`teams=3`、`listLen=3`；三队 total 81,410 / 78,278 / 77,235 单调递减（贪心预期）；
+  **无豁免时跨队重复只有玛修**（800100），其余互不重叠 ✅；把某从者标豁免后它确实跨 3 队重复出现 ✅；
+  单队模式回归 `singleListLen=8`、`singleFirstTotal` 与无重复第 1 队一致 ✅。
+- UI：设 `dupK=2` 渲染出 **2 个队伍块**、`err=false`、`warn=false`、说明笔记存在、`CONSOLE_ERRORS=[]` ✅。
+
+**开发中被探针抓到的 3 个真 bug（都已修）**：
+1. `buildPool` 里我误写成 `C.isMash(s)`，但内核块内没有 `C`（`const C = CORE` 只在界面块）→ `ReferenceError`；
+   改成同层的 `isMash(s)`。
+2. `solveMulti` 把 `lastPool` 存成 `res.pool.length`（数字），界面渲染 `res.pool.map(...)` 报
+   `res.pool.map is not a function` → 改为存数组 `res.pool`（最后一轮的候选池）。
+3. `applyExempt` 调 `C.setExempt`，但当时 `setExempt/isExempt` 没导出到 `CORE` → `TypeError: C.setExempt is not a function`
+   （发生在 `loadState` 启动链路）；把 `setExempt/isExempt/EXEMPT` 补进 `root.CORE` 导出，与 `BLOCKED` 同处理。
+
+### 文件清单变动
+- 主交付物 `bond_calculator.html` 新增：无重复模式开关、重复豁免列、内核 `solveMulti` 与 `EXEMPT` 集合。
+- 新增测试：`_smoke_cdp.js` / `_smoke_ui.js`（可删；按惯例编写过一次就不再有用的脚本下次清理时删）。
+- `README.md` 新增「No-repeat mode (无重复模式)」章节 + Features added 提到本功能。
+

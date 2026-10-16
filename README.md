@@ -133,6 +133,36 @@ Two bugs in earlier revisions produced **wrong answers**, not crashes:
   17/20 groups unordered when off).
 - **好友冠位礼装框数 (friend crown essence frames)** — default **2**
   (1 regular support frame + 1 crown bonus frame).
+- **无重复模式 (no-repeat mode)** — output **K** teams (default 3) in which most
+  servants appear at most once across all teams; a few servants you mark
+  **重复豁免 (repeat-exempt)** may appear in every team. See below.
+
+## No-repeat mode (无重复模式)
+
+When you plan to farm one node with **K** alternating teams (so the same servant is
+never (or rarely) double-booked), turn on **无重复模式** in the **自动最优** tab
+and set **K** (输出几支互不重复的队伍, default 3, range 1–20). Instead of one
+optimal team, the solver returns K teams that cover most of your box without
+overlap.
+
+- **How it works — greedy, one team at a time.** Each round it runs the normal
+  exhaustive search over the *current* candidate pool, takes the single best team,
+  then **removes every non-exempt servant** in that team from the pool and searches
+  again. Enumeration cost shrinks each round (Σ C(n−5k, 5) ≪ one-shot C(n, 5)),
+  so it is fast even on the full 275-servant box.
+- **重复豁免 (repeat-exempt) column** in the **我的 BOX** tab — a per-servant
+  checkbox. An exempt servant (e.g. a Mashu battery, or a servant you want on every
+  team) stays in the candidate pool and may appear in all K teams. **Mashu (玛修)
+  is always exempt** because she is on by default every team.
+- **It is an approximation, not a globally optimal K-team set.** Each round picks
+  the local optimum, so the K-th team may be slightly worse than a globally
+  co-ordinated plan. For "rotate teams to farm one node" this is more than enough,
+  and the result page says so. If you need a single best team, leave the mode off.
+- Honours the same constraints as normal mode: Cost cap, crown / Cost tie-breakers,
+  候选池 force-in/out, and the 屏蔽 list all still apply.
+- Verified by an automated headless-Chrome probe: with no exemptions, the K teams
+  share only Mashu; marking a servant exempt makes it repeat across all K teams;
+  zero JS errors on the result page.
 
 ## Craft-essence data (礼装数据)
 

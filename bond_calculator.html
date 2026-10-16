@@ -127,6 +127,7 @@ pre.dump{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-si
         <label class="chk"><input type="checkbox" id="p-m15"> 玛修已刷到 15 绊（她自己就吃不到羁绊了）</label>
         <label class="chk"><input type="checkbox" id="p-needCrown" checked> <b>冠位从者至少上场一位</b>（可戴冠者即算；冠位战/刷冠位羁绊用）</label>
         <label class="chk"><input type="checkbox" id="p-maxCost" checked> <b>尽量用满 Cost</b>（总分相同时优先选 Cost 用得更满的，不牺牲羁绊收益）</label>
+        <label class="chk"><input type="checkbox" id="p-noDup"> <b>无重复模式</b>（输出 <input type="number" id="p-dupK" value="3" min="1" max="20" style="width:48px"> 支互不重复的队伍，每队不抢同一批人；玛修等「重复豁免」从者可每队都带）</label>
         <div class="note" style="margin-top:0">手动屏蔽名单：<b id="p-blkn">0</b> 骑 —— 在「我的 BOX」页每行的「屏蔽」列勾选，被屏蔽的从者不进候选池（手动配队页不受影响）。<button class="mini gray" id="btn-blk-manage" style="margin-left:8px">去设置屏蔽名单</button></div>
       </div>
       <div style="margin-top:14px">
@@ -346,6 +347,17 @@ function setBlocked(ids) {
   if (ids) for (let i = 0; i < ids.length; i++) BLOCKED.add(+ids[i]);
 }
 function isBlocked(id) { return BLOCKED.has(+id); }
+
+/* ---- 无重复模式：被「重复豁免」标记的从者可在多队间重复上场（其余每队只出现一次）----
+   [2026-10-15 新功能] 与 BLOCKED 同层，存 id；由「我的 BOX」页的「重复豁免」列注入。
+   语义：无重复模式里，未豁免者一旦进了某队，后续轮次就从候选池移除；豁免者（如玛修电池）
+   留在池里可每队都带。buildPool 在 add() 时据此剔除非豁免的已用者（见 P._exclude）。 */
+const EXEMPT = new Set();
+function setExempt(ids) {
+  EXEMPT.clear();
+  if (ids) for (let i = 0; i < ids.length; i++) EXEMPT.add(+ids[i]);
+}
+function isExempt(id) { return EXEMPT.has(+id); }
 
 /* ---- 「联网更新礼装」缓存下来的新礼装 ----
    必须在这里合并：NCE、礼装位图、后面所有按「礼装索引」建的定长数组都在下面几行创建，
@@ -589,6 +601,11 @@ function defP() {
     needCrown: true,
     maxCost: true,
     poolFull: false,   // [2026-10-15] 全量模式：不做启发式截断（漏解时用）
+    /* [2026-10-15 新功能] 无重复模式：输出 K 支互不重复的队伍（少数豁免者除外），
+       采用每轮取 top1、移除非豁免已用者再算下一轮的贪心策略 —— 逐轮池缩小，
+       枚举量 Σ C(n-5k,5) 远小于一次枚举全部 C(n,5) 再做后处理，大池也跑得动。 */
+    noDup: false,
+    dupK: 3,
     en: CE.map(function () { return 1; })
   };
   return applyFsn(P);
@@ -995,6 +1012,9 @@ function buildPool(P) {
     if (!s) return;
     if (!inCf(s)) return;
     if (isBlk(s)) return;
+    /* [2026-10-15 无重复模式] 已被前几轮选走、且未标记「重复豁免」的从者，
+       本轮不再进候选池。豁免者（含玛修，她默认每队必上）仍可每队都带。 */
+    if (P._exclude && P._exclude.has(s.id) && !isExempt(s.id) && !isMash(s)) return;
     if (POOL_DEL.has(s.id)) { delHit.add(s.id); return; }
     if (!seen.has(s.id)) { seen.add(s.id); pool.push(s); }
   };
@@ -1146,6 +1166,38 @@ function solve(P) {
   return out;
 }
 
+/* [2026-10-15 新功能] 无重复模式：贪心产出 K 支互不重复的队伍。
+   做法：每轮调用 solve() 取当前候选池的 top1 队，把该队里「未标记重复豁免」的从者
+   累加进 P._exclude，下一轮 buildPool 自动把这些已用者移出候选池，再算下一队。
+   性能：逐轮候选池缩小，枚举量 Σ C(n-5k,5)，远小于一次枚举全部 + 后处理挑不重复。
+   注意：这是贪心近似（每轮局部最优），不是「全局最优的 K 队集合」；规划多队轮替刷本够用。
+   豁免者（如玛修）留在池里，可每队都带。 */
+function solveMulti(P) {
+  const K = Math.max(1, Math.min(20, P.dupK | 0));
+  const used = new Set();          // 跨轮累积：已被某队选走、且未豁免的从者 id
+  const teams = [];
+  let lastCap = 0, lastPool = [], lastFeasible = 0, lastMs = 0, lastTooBig = false;
+  for (let k = 0; k < K; k++) {
+    P._exclude = used;             // buildPool 据此跳过的已用者
+    const res = solve(P);
+    lastCap = res.cap; lastPool = res.pool; lastFeasible = res.feasible;
+    if (res.tooBig) { lastTooBig = true; break; }
+    if (!res.list.length) break;   // 凑不出第 k+1 队（候选池已不足 5 人或约束太紧）
+    const top = res.list[0];
+    teams.push(top);
+    /* 把该队里非豁免者标记为「已用」，下一轮移出候选池 */
+    for (let i = 0; i < top.team.length; i++) {
+      const s = top.team[i];
+      if (!isExempt(s.id)) used.add(s.id);
+    }
+  }
+  P._exclude = null;
+  return {
+    multi: true, cap: lastCap, pool: lastPool, feasible: lastFeasible,
+    tooBig: lastTooBig, teams: teams, list: teams
+  };
+}
+
 /* 手动模式：用户指定的 5 人 */
 function evalManual(ids, P) {
   P._enKey = P.en.join('');
@@ -1166,13 +1218,14 @@ function evalManual(ids, P) {
 root.CORE = {
   BOX: BOX, CE: CE, DATA: D, NCE: NCE, CLS: CLS, TRAIT: TRAIT,
   defP: defP, applyFsn: applyFsn, evalTeam: evalTeam, evalManual: evalManual, solve: solve,
-  buildPool: buildPool, crownPlan: crownPlan, crownGroupOf: crownGroupOf,
+  solveMulti: solveMulti, buildPool: buildPool, crownPlan: crownPlan, crownGroupOf: crownGroupOf,
   bdEff: bdEff, isMash: isMash, allocCE: allocCE, rebuildBits: rebuildBits,
   rebuildG: rebuildG, comb5: comb5, allocStats: _allocStats,
   applyMask: applyMask, applyMaskFor: applyMaskFor, rebuildAllMasks: rebuildAllMasks,
   decodeCapture: decodeCapture, importCapture: importCapture, boxStamp: boxStamp,
   STATIC: STATIC,
   setBlocked: setBlocked, isBlocked: isBlocked, BLOCKED: BLOCKED,
+  setExempt: setExempt, isExempt: isExempt, EXEMPT: EXEMPT,
   setPoolAdd: setPoolAdd, setPoolDel: setPoolDel, isPoolAdd: isPoolAdd, isPoolDel: isPoolDel,
   POOL_ADD: POOL_ADD, POOL_DEL: POOL_DEL
 };
@@ -1192,6 +1245,7 @@ let manual = [];
 let boxSort = 'cls';
 let boxFilter = { q: '', cls: '', onlyCr: false, onlyGd: false, onlyBlk: false, onlyPool: false, onlyOut: false };
 let blockedIds = [];   // 手动屏蔽名单（从者 id 数组），持久化在 state.blk
+let exemptIds = [];    // 无重复模式下的「重复豁免」从者 id 数组，持久化在 state.exm
 
 /* ------------------------------ 小工具 ------------------------------ */
 function esc(s) {
@@ -1231,7 +1285,7 @@ function ceCoverCount(c) {
 const EMBED_STAMP = C.boxStamp(D.box);
 const PKEYS = ['base', 'costMax', 'b15', 'mash', 'mash15', 'frontN', 'frontSelf', 'fce',
   'freeCrown', 'mashBond', 'mashIn', 'mcrown', 'noMash', 'forceBat', 'noBat', 'all15', 'm15',
-  'fsn7', 'needCrown', 'maxCost', 'poolFull',
+  'fsn7', 'needCrown', 'maxCost', 'poolFull', 'noDup', 'dupK',
   'crownMode', 'crownPerGroup', 'plainTop', 'topN', 'classes'];
 
 function boxRows() {
@@ -1254,7 +1308,7 @@ function restoreBox(rows) {
 }
 function saveState() {
   const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice(),
-              padd: poolAddIds.slice(), pdel: poolDelIds.slice() };
+              padd: poolAddIds.slice(), pdel: poolDelIds.slice(), exm: exemptIds.slice() };
   PKEYS.forEach(function (k) { o.p[k] = P[k]; });
   o.p.en = P.en.slice();
   CE.forEach(function (c) { o.ce[c.no] = [c.r, c.f, c.cs]; });
@@ -1269,6 +1323,7 @@ function loadState() {
   if (Array.isArray(o.blk)) blockedIds = o.blk.map(Number).filter(function (x) { return x > 0; });
   if (Array.isArray(o.padd)) poolAddIds = o.padd.map(Number).filter(function (x) { return x > 0; });
   if (Array.isArray(o.pdel)) poolDelIds = o.pdel.map(Number).filter(function (x) { return x > 0; });
+  if (Array.isArray(o.exm)) exemptIds = o.exm.map(Number).filter(function (x) { return x > 0; });
   if (o.ce) CE.forEach(function (c) {
     const v = o.ce[c.no];
     if (v) { c.r = v[0]; c.f = v[1]; c.cs = v[2]; }
@@ -1288,6 +1343,7 @@ function loadState() {
   }
   applyBlocked();
   applyPool();
+  applyExempt();
   refreshAll();
   return notice;
 }
@@ -1307,6 +1363,7 @@ function resetState() {
   try { localStorage.removeItem(LSKEY); } catch (e) { }
   blockedIds = []; applyBlocked();
   poolAddIds = []; poolDelIds = []; applyPool();
+  exemptIds = []; applyExempt();
   P = C.defP();
   restoreBox(D.box.map(function (s) {
     return [s.id, s.n, s.cid, s.lv, s.bd, s.cs, s.r, s.cr, s.gd, s.lo, s.hi];
@@ -1375,6 +1432,7 @@ function syncIn() {
   $('p-m15').checked = !!P.m15;
   $('p-needCrown').checked = !!P.needCrown;
   $('p-maxCost').checked = !!P.maxCost;
+  $('p-noDup').checked = !!P.noDup; $('p-dupK').value = P.dupK;
   $('p-base').value = P.base; $('p-costMax').value = P.costMax; $('p-b15').value = P.b15;
   $('p-mash').value = P.mash; $('p-mash15').value = P.mash15;
   $('p-frontN').value = P.frontN; $('p-frontSelf').value = P.frontSelf;
@@ -1394,6 +1452,8 @@ function readIn() {
   P.m15 = $('p-m15').checked;
   P.needCrown = $('p-needCrown').checked;
   P.maxCost = $('p-maxCost').checked;
+  P.noDup = $('p-noDup').checked;
+  P.dupK = Math.max(1, Math.min(20, +$('p-dupK').value || 3));
   P.base = +$('p-base').value || 0; P.costMax = +$('p-costMax').value || 0;
   P.b15 = +$('p-b15').value || 0; P.mash = +$('p-mash').value || 0;
   P.mash15 = +$('p-mash15').value || 0;
@@ -1478,7 +1538,9 @@ function doSolve() {
     const t0 = performance.now();
     let res;
     try {
-      res = C.solve(P);
+      /* [2026-10-15 无重复模式] 走贪心多队求解；否则走原单队求解。
+         两者返回结构对齐：res.{pool,cap,feasible,tooBig,list}，list 每项即可渲染的一队。 */
+      res = P.noDup ? C.solveMulti(P) : C.solve(P);
     } catch (e) {
       out.innerHTML = '<div class="err">计算出错：' + esc(e.message) + '</div>';
       btn.disabled = false;
@@ -1599,6 +1661,12 @@ function doSolve() {
           (s.gd ? ' 冠' : '') + ' 礼装' + s.nm + (added ? ' <b>手动拉进</b>' : '') + '</span></span>';
       }).join('') + '</div></div>';
     const best = res.list[0].total;
+    if (P.noDup) {
+      h += '<div class="note" style="margin-top:0"><b>无重复模式</b>：共输出 <b>' + res.list.length +
+        '</b> 支互不重复的队伍（你设定 ' + P.dupK + ' 支）。采用「每轮取当前最优队、移除非豁免已用者再算下一轮」的' +
+        '<b>贪心近似</b>——每队不抢同一批人（「重复豁免」的从者可每队都带，见「我的 BOX」页）。' +
+        '这是近似解，不是全局最优的 K 队集合；想看全局最优就关掉此开关、用普通模式的 topN 自行挑不重复的队。</div>';
+    }
     h += res.list.map(function (r, i) {
       return renderResult(r, i + 1);
     }).join('');
@@ -1746,6 +1814,21 @@ function setBlkId(id, on) {
   else if (!on && i >= 0) blockedIds.splice(i, 1);
   applyBlocked(); saveState();
 }
+/* [2026-10-15 无重复模式] 重复豁免：打勾 = 该从者可跨队重复上场（无重复模式里每队都带） */
+function applyExempt() {
+  const have = {};
+  for (let i = 0; i < BOX.length; i++) have[BOX[i].id] = 1;
+  exemptIds = exemptIds.filter(function (id) { return have[id]; });
+  C.setExempt(exemptIds);
+}
+function isExemptId(id) { return exemptIds.indexOf(+id) >= 0; }
+function setExemptId(id, on) {
+  id = +id;
+  const i = exemptIds.indexOf(id);
+  if (on && i < 0) exemptIds.push(id);
+  else if (!on && i >= 0) exemptIds.splice(i, 1);
+  applyExempt(); saveState();
+}
 function blkByThreshold(thr) {
   let added = 0;
   BOX.forEach(function (s) {
@@ -1815,6 +1898,7 @@ function renderBox() {
     '<table><thead><tr><th>从者</th><th>职阶</th><th>等级</th><th>Cost</th>' +
     '<th style="width:90px">羁绊</th><th style="width:70px">可戴冠</th>' +
     '<th style="width:70px">已戴冠</th><th style="width:60px">屏蔽</th>' +
+    '<th style="width:60px">重复豁免</th>' +
     '<th style="width:96px">候选池</th><th>匹配礼装</th></tr></thead><tbody>' +
     lst.map(function (s) {
       const inPool = autoIds.has(s.id);
@@ -1834,6 +1918,7 @@ function renderBox() {
         '<td><input type="checkbox" ' + (s.cr ? 'checked' : '') + ' data-c="' + s.id + '"></td>' +
         '<td><input type="checkbox" ' + (s.gd ? 'checked' : '') + ' data-g="' + s.id + '"></td>' +
         '<td><input type="checkbox" ' + (isBlkId(s.id) ? 'checked' : '') + ' data-k="' + s.id + '"></td>' +
+        '<td><input type="checkbox" ' + (isExemptId(s.id) ? 'checked' : '') + ' data-e="' + s.id + '" title="无重复模式下可跨队重复上场"></td>' +
         '<td>' + sel + '</td>' +
         '<td class="dim">' + s.nm + ' 张</td></tr>';
     }).join('') + '</tbody></table>';
@@ -1858,6 +1943,10 @@ function renderBox() {
   });
   $('box-table').querySelectorAll('[data-k]').forEach(function (el) {
     el.onchange = function () { setBlkId(+el.getAttribute('data-k'), el.checked); renderBox(); };
+  });
+  /* [2026-10-15 无重复模式] 重复豁免列：打勾 = 该从者可跨队重复上场 */
+  $('box-table').querySelectorAll('[data-e]').forEach(function (el) {
+    el.onchange = function () { setExemptId(+el.getAttribute('data-e'), el.checked); renderBox(); };
   });
   /* [2026-10-15] 候选池三态下拉 */
   $('box-table').querySelectorAll('[data-p]').forEach(function (el) {
@@ -2322,7 +2411,7 @@ function bind() {
     resetState(); syncIn(); renderBox(); renderCE(); renderHelp();
   };
   $('btn-export').onclick = function () {
-    const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice() };
+    const o = { v: 2, stamp: EMBED_STAMP, p: {}, ce: {}, box: boxRows(), blk: blockedIds.slice(), exm: exemptIds.slice() };
     PKEYS.forEach(function (k) { o.p[k] = P[k]; });
     o.p.en = P.en.slice();
     CE.forEach(function (c) { o.ce[c.no] = [c.r, c.f, c.cs]; });
@@ -2364,6 +2453,7 @@ function bind() {
       if (o.p) PKEYS.forEach(function (k) { if (o.p[k] !== undefined) P[k] = o.p[k]; });
       if (o.p && Array.isArray(o.p.en) && o.p.en.length === CE.length) P.en = o.p.en.slice();
       if (Array.isArray(o.blk)) blockedIds = o.blk.map(Number).filter(function (x) { return x > 0; });
+      if (Array.isArray(o.exm)) exemptIds = o.exm.map(Number).filter(function (x) { return x > 0; });
       if (o.box && Array.isArray(o.box) && o.box.length && Array.isArray(o.box[0])) restoreBox(o.box);
       applyBlocked();
       if (o.ce) CE.forEach(function (c) { const v = o.ce[c.no]; if (v) { c.r = v[0]; c.f = v[1]; c.cs = v[2]; } });
